@@ -6,6 +6,7 @@ class RemoteSync extends IPSModule
 {
     private $rpcClient = null;
     private $idMappingCache = [];
+    private $profileCache = []; // Caches which profiles we have already synced this session
 
     public function Create()
     {
@@ -16,7 +17,7 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyBoolean('AutoCreate', true);
         $this->RegisterPropertyInteger('CipherVarID', 0);
         $this->RegisterPropertyInteger('KeyVarID', 0);
-        $this->RegisterPropertyInteger('RemoteServerKey', 0); // The selected server ID (1, 2, 3...)
+        $this->RegisterPropertyInteger('RemoteServerKey', 0); 
         $this->RegisterPropertyInteger('LocalRootID', 0);
         $this->RegisterPropertyInteger('RemoteRootID', 0);
         $this->RegisterPropertyString('SyncList', '[]');
@@ -26,24 +27,19 @@ class RemoteSync extends IPSModule
     {
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
         
-        // --- Dynamic Part 1: Populate Server List from Encrypted Data ---
+        // --- Populate Server List ---
         $accessData = $this->GetAccessData();
         $serverOptions = [];
 
         if ($accessData !== false) {
             foreach ($accessData as $key => $data) {
-                // Check if 'Location' exists, otherwise fallback to key
                 $name = $data['Location'] ?? "Server Key $key";
-                $serverOptions[] = [
-                    'caption' => $name,
-                    'value'   => $key
-                ];
+                $serverOptions[] = ['caption' => $name, 'value' => $key];
             }
         } else {
             $serverOptions[] = ['caption' => "Please select Auth Variables and Apply", 'value' => 0];
         }
 
-        // Inject options into the form
         foreach ($form['elements'] as &$element) {
             if (isset($element['name']) && $element['name'] == 'RemoteServerKey') {
                 $element['options'] = $serverOptions;
@@ -51,7 +47,7 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // --- Dynamic Part 2: Populate Sync List from Local Root ---
+        // --- Populate Sync List ---
         $rootID = $this->ReadPropertyInteger('LocalRootID');
         $savedListJSON = $this->ReadPropertyString('SyncList');
         $savedList = json_decode($savedListJSON, true);
@@ -106,18 +102,17 @@ class RemoteSync extends IPSModule
         $activeCount = 0;
         $continueInitialSync = true;
 
-        // 3. Status Checks
         if ($localRoot == 0 || !IPS_ObjectExists($localRoot)) {
             $this->SetStatus(IS_INACTIVE);
             return;
         }
         
         if ($remoteServerKey == 0) {
-            $this->SetStatus(IS_INACTIVE); // Waiting for server selection
+            $this->SetStatus(IS_INACTIVE); 
             return;
         }
 
-        // 4. Process Sync
+        // 3. Process Sync
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
                 if (empty($item['Active'])) continue;
@@ -128,7 +123,6 @@ class RemoteSync extends IPSModule
                 $this->RegisterMessage($objID, VM_UPDATE);
                 $activeCount++;
                 
-                // Initial Push
                 if ($continueInitialSync) {
                     $currentValue = GetValue($objID);
                     $success = $this->SyncVariable($objID, $currentValue);
@@ -147,6 +141,7 @@ class RemoteSync extends IPSModule
         }
         
         $this->idMappingCache = [];
+        $this->profileCache = []; // Reset profile cache on apply
     }
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
@@ -156,66 +151,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    // --- Helper Functions ---
-
-    /**
-     * Centralized function to decrypt credentials.
-     * Returns the array of servers or false on failure.
-     */
-    private function GetAccessData()
-    {
-        $cipherID = $this->ReadPropertyInteger('CipherVarID');
-        $keysID = $this->ReadPropertyInteger('KeyVarID');
-
-        if ($cipherID == 0 || $keysID == 0) return false;
-        if (!IPS_VariableExists($cipherID) || !IPS_VariableExists($keysID)) return false;
-
-        $ciphertext = GetValueString($cipherID);
-        $cipher_keys = GetValueString($keysID);
-        
-        $keyring_hex = @unserialize($cipher_keys);
-        if ($keyring_hex === false || !isset($keyring_hex['secret_key'])) return false;
-
-        $secret_key = hex2bin($keyring_hex['secret_key']);
-        $iv = hex2bin($keyring_hex['iv']);
-        $tag = hex2bin($keyring_hex['tag']);
-
-        $original_plaintext = openssl_decrypt($ciphertext, $keyring_hex['cipher'], $secret_key, $options=0, $iv, $tag);
-        
-        if ($original_plaintext === false) return false;
-
-        $data = @unserialize($original_plaintext);
-        return ($data === false) ? false : $data;
-    }
-
-    private function InitConnection()
-    {
-        if ($this->rpcClient !== null) return true;
-
-        $accessData = $this->GetAccessData();
-        if ($accessData === false) {
-            $this->LogDebug("Failed to decrypt access data.");
-            return false;
-        }
-
-        // Get the selected server key from config
-        $selectedKey = $this->ReadPropertyInteger('RemoteServerKey');
-
-        if (!isset($accessData[$selectedKey])) {
-            $this->LogDebug("Selected Server Key $selectedKey not found in encrypted data.");
-            return false;
-        }
-
-        $serverConfig = $accessData[$selectedKey];
-        
-        // Build URL
-        $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
-        
-        $this->LogDebug("Connecting to: " . ($serverConfig['Location'] ?? $serverConfig['URL']));
-        
-        $this->rpcClient = new SimpleJSONRPC($url);
-        return true;
-    }
+    // --- Core Logic ---
 
     private function SyncVariable(int $localID, $value): bool
     {
@@ -266,11 +202,12 @@ class RemoteSync extends IPSModule
                 if ($autoCreate) {
                     $isLeaf = ($index === count($pathStack) - 1);
                     if ($isLeaf) {
+                        // Create Variable
                         $localObj = IPS_GetVariable($localID);
                         $type = $localObj['VariableType'];
                         $childID = $this->rpcClient->IPS_CreateVariable($type);
                     } else {
-                        // Dummy Instance
+                        // Create Dummy Instance
                         $childID = $this->rpcClient->IPS_CreateInstance("{485D0419-BE97-4548-AA9C-C083EB82E61E}");
                     }
                     try {
@@ -287,8 +224,143 @@ class RemoteSync extends IPSModule
             $currentRemoteID = $childID;
         }
 
+        // --- Profile Sync Logic (Only for the leaf variable) ---
+        // We do this every time we resolve the ID to ensure profile changes are synced
+        // or applied if the variable existed but had the wrong profile.
+        $this->EnsureRemoteProfile($localID, $currentRemoteID);
+
         $this->idMappingCache[$localID] = $currentRemoteID;
         return $currentRemoteID;
+    }
+
+    private function EnsureRemoteProfile(int $localID, int $remoteID)
+    {
+        $localVar = IPS_GetVariable($localID);
+        
+        // Priority: Custom Profile > Standard Profile
+        $profileName = $localVar['VariableCustomProfile'];
+        if ($profileName == "") {
+            $profileName = $localVar['VariableProfile'];
+        }
+
+        if ($profileName == "") return; // No profile to sync
+
+        // Sync the profile definition to remote
+        $this->SyncProfileToRemote($profileName, $localVar['VariableType']);
+
+        // Assign the profile to the remote variable
+        try {
+            // We use SetVariableCustomProfile to force the profile on the remote variable
+            // even if it was a Standard Profile locally. This ensures it looks exactly the same.
+            @$this->rpcClient->IPS_SetVariableCustomProfile($remoteID, $profileName);
+        } catch (Exception $e) {
+            $this->LogDebug("Failed to assign profile $profileName: " . $e->getMessage());
+        }
+    }
+
+    private function SyncProfileToRemote($profileName, $varType)
+    {
+        // Don't sync standard profiles (starting with ~) as they are system locked.
+        // But we still allow assigning them in the previous step.
+        if (substr($profileName, 0, 1) == "~") return;
+
+        // Check Cache to avoid RPC spam
+        if (in_array($profileName, $this->profileCache)) return;
+
+        // Check if exists Remote
+        try {
+            if ($this->rpcClient->IPS_VariableProfileExists($profileName)) {
+                $this->profileCache[] = $profileName;
+                return;
+            }
+        } catch (Exception $e) {
+            // If check fails, assume connection issue, abort
+            return;
+        }
+
+        // Get Local Profile Data
+        $localProfile = IPS_GetVariableProfile($profileName);
+
+        $this->LogDebug("Creating missing Remote Profile: " . $profileName);
+
+        try {
+            // Create Profile
+            $this->rpcClient->IPS_CreateVariableProfile($profileName, $varType);
+
+            // Set Text (Prefix/Suffix)
+            $this->rpcClient->IPS_SetVariableProfileText($profileName, $localProfile['Prefix'], $localProfile['Suffix']);
+
+            // Set Values (Min/Max/Step)
+            $this->rpcClient->IPS_SetVariableProfileValues($profileName, $localProfile['MinValue'], $localProfile['MaxValue'], $localProfile['StepSize']);
+
+            // Set Digits
+            $this->rpcClient->IPS_SetVariableProfileDigits($profileName, $localProfile['Digits']);
+
+            // Set Icon
+            $this->rpcClient->IPS_SetVariableProfileIcon($profileName, $localProfile['Icon']);
+
+            // Set Associations
+            foreach ($localProfile['Associations'] as $assoc) {
+                $this->rpcClient->IPS_SetVariableProfileAssociation(
+                    $profileName, 
+                    $assoc['Value'], 
+                    $assoc['Name'], 
+                    $assoc['Icon'], 
+                    $assoc['Color']
+                );
+            }
+
+            // Cache it
+            $this->profileCache[] = $profileName;
+
+        } catch (Exception $e) {
+            $this->LogDebug("Error creating profile $profileName: " . $e->getMessage());
+        }
+    }
+
+    // --- Helper Functions ---
+
+    private function GetAccessData()
+    {
+        $cipherID = $this->ReadPropertyInteger('CipherVarID');
+        $keysID = $this->ReadPropertyInteger('KeyVarID');
+
+        if ($cipherID == 0 || $keysID == 0) return false;
+        if (!IPS_VariableExists($cipherID) || !IPS_VariableExists($keysID)) return false;
+
+        $ciphertext = GetValueString($cipherID);
+        $cipher_keys = GetValueString($keysID);
+        
+        $keyring_hex = @unserialize($cipher_keys);
+        if ($keyring_hex === false || !isset($keyring_hex['secret_key'])) return false;
+
+        $secret_key = hex2bin($keyring_hex['secret_key']);
+        $iv = hex2bin($keyring_hex['iv']);
+        $tag = hex2bin($keyring_hex['tag']);
+
+        $original_plaintext = openssl_decrypt($ciphertext, $keyring_hex['cipher'], $secret_key, $options=0, $iv, $tag);
+        
+        if ($original_plaintext === false) return false;
+
+        $data = @unserialize($original_plaintext);
+        return ($data === false) ? false : $data;
+    }
+
+    private function InitConnection()
+    {
+        if ($this->rpcClient !== null) return true;
+
+        $accessData = $this->GetAccessData();
+        if ($accessData === false) return false;
+
+        $selectedKey = $this->ReadPropertyInteger('RemoteServerKey');
+        if (!isset($accessData[$selectedKey])) return false;
+
+        $serverConfig = $accessData[$selectedKey];
+        $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
+        
+        $this->rpcClient = new SimpleJSONRPC($url);
+        return true;
     }
 
     private function GetRecursiveVariables($parentID)
