@@ -4,17 +4,21 @@
         { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode" },
         { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
 
-        { "type": "Label", "caption": "Authentication" },
+        { "type": "Label", "caption": "Authentication (Local -> Remote)" },
         { "type": "SelectVariable", "name": "CipherVarID", "caption": "Ciphertext Variable ID" },
         { "type": "SelectVariable", "name": "KeyVarID", "caption": "Key Variable ID" },
-        
-        { "type": "Label", "caption": "Target Server" },
         { 
             "type": "Select", 
             "name": "RemoteServerKey", 
-            "caption": "Select Remote Server",
+            "caption": "Target Remote Server",
             "options": [] 
         },
+
+        { "type": "Label", "caption": "Reverse Control (Remote -> Local)" },
+        { "type": "Label", "caption": "Required for 'Remote Action' to work." },
+        { "type": "NumberSpinner", "name": "RemoteCipherID", "caption": "Remote ID: Encrypted Data" },
+        { "type": "NumberSpinner", "name": "RemoteKeyID", "caption": "Remote ID: Encrypted Keys" },
+        { "type": "ValidationTextBox", "name": "LocalServerLocation", "caption": "Local Server Name (in Encrypted DB)" },
 
         { "type": "Label", "caption": "Mirror Anchors" },
         { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category (Save to populate list)" },
@@ -31,7 +35,9 @@
             "columns": [
                 { "name": "ObjectID", "caption": "ID", "width": "70px", "edit": { "type": "Label" } },
                 { "name": "Name", "caption": "Variable Name", "width": "auto", "edit": { "type": "Label" } },
-                { "name": "Active", "caption": "Sync", "width": "70px", "edit": { "type": "CheckBox" } }
+                { "name": "Active", "caption": "Sync", "width": "50px", "edit": { "type": "CheckBox" } },
+                { "name": "Action", "caption": "R-Action", "width": "70px", "edit": { "type": "CheckBox" } },
+                { "name": "Delete", "caption": "Del Remote", "width": "80px", "edit": { "type": "CheckBox" } }
             ],
             "values": []
         }
