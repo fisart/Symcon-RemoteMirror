@@ -7,6 +7,14 @@
         { "type": "Label", "caption": "Authentication" },
         { "type": "SelectVariable", "name": "CipherVarID", "caption": "Ciphertext Variable ID" },
         { "type": "SelectVariable", "name": "KeyVarID", "caption": "Key Variable ID" },
+        
+        { "type": "Label", "caption": "Target Server" },
+        { 
+            "type": "Select", 
+            "name": "RemoteServerKey", 
+            "caption": "Select Remote Server",
+            "options": [] 
+        },
 
         { "type": "Label", "caption": "Mirror Anchors" },
         { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category (Save to populate list)" },
