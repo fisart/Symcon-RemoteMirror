@@ -21,22 +21,13 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyString('SyncList', '[]');
     }
 
-    /**
-     * This function is called when the configuration form is loaded.
-     * We use it to populate the SyncList dynamically based on the LocalRootID.
-     */
     public function GetConfigurationForm()
     {
-        // 1. Load the base form structure
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
-
-        // 2. Get the currently saved Root ID and SyncList
         $rootID = $this->ReadPropertyInteger('LocalRootID');
         $savedListJSON = $this->ReadPropertyString('SyncList');
         $savedList = json_decode($savedListJSON, true);
 
-        // Create a map of currently active IDs for fast lookup
-        // Format: [12345 => true, 56789 => false]
         $activeMap = [];
         if (is_array($savedList)) {
             foreach ($savedList as $item) {
@@ -46,26 +37,19 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // 3. If Root ID is valid, scan the tree
         $values = [];
         if ($rootID > 0 && IPS_ObjectExists($rootID)) {
             $variables = $this->GetRecursiveVariables($rootID);
-
             foreach ($variables as $varID) {
-                // Determine if this variable was previously checked
                 $isActive = isset($activeMap[$varID]) ? $activeMap[$varID] : false;
-
-                // Build the row for the List
                 $values[] = [
                     'ObjectID' => $varID,
-                    'Name'     => IPS_GetName($varID), // Or build a full path if you prefer
+                    'Name'     => IPS_GetName($varID),
                     'Active'   => $isActive
                 ];
             }
         }
 
-        // 4. Inject values into the form JSON
-        // We need to find the element named "SyncList"
         foreach ($form['elements'] as &$element) {
             if (isset($element['name']) && $element['name'] == 'SyncList') {
                 $element['values'] = $values;
@@ -86,36 +70,49 @@ class RemoteSync extends IPSModule
             $this->UnregisterMessage($senderID, VM_UPDATE);
         }
 
-        // 2. Process the Sync List
+        // 2. Load Config
         $syncList = json_decode($this->ReadPropertyString('SyncList'), true);
         $localRoot = $this->ReadPropertyInteger('LocalRootID');
-        
         $activeCount = 0;
+        
+        // 3. Process List & Perform Initial Sync
+        $continueInitialSync = true; // Flag to stop trying if remote is down (prevents hang)
 
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
-                // Only register if "Active" is checked
                 if (empty($item['Active'])) continue;
                 
                 $objID = $item['ObjectID'];
-                
                 if (!IPS_ObjectExists($objID)) continue;
 
-                // Register Message
+                // A. Register for future updates
                 $this->RegisterMessage($objID, VM_UPDATE);
                 $activeCount++;
+                
+                // B. Sync IMMEDIATELY (Create & Push)
+                if ($continueInitialSync) {
+                    $currentValue = GetValue($objID);
+                    // SyncVariable returns false if connection failed
+                    $success = $this->SyncVariable($objID, $currentValue);
+                    
+                    if (!$success) {
+                        $continueInitialSync = false;
+                        $this->LogDebug("Initial sync failed. Aborting bulk sync to prevent timeouts.");
+                    }
+                }
             }
         }
 
-        // 3. Set Status
+        // 4. Set Module Status
         if ($localRoot == 0 || !IPS_ObjectExists($localRoot)) {
-            $this->SetStatus(IS_INACTIVE); // Waiting for config
+            $this->SetStatus(IS_INACTIVE);
         } elseif ($activeCount > 0) {
-            $this->SetStatus(IS_ACTIVE);   // Working
+            $this->SetStatus(IS_ACTIVE);
         } else {
-            $this->SetStatus(IS_INACTIVE); // Root set, but nothing selected
+            $this->SetStatus(IS_INACTIVE);
         }
         
+        // Clear cache
         $this->idMappingCache = [];
     }
 
@@ -126,38 +123,43 @@ class RemoteSync extends IPSModule
         }
     }
 
-    // --- Private Helper Functions ---
-
     private function GetRecursiveVariables($parentID)
     {
         $result = [];
         $children = IPS_GetChildrenIDs($parentID);
         foreach ($children as $childID) {
             $obj = IPS_GetObject($childID);
-            if ($obj['ObjectType'] == 2) { // Variable
+            if ($obj['ObjectType'] == 2) { 
                 $result[] = $childID;
-            } elseif ($obj['ObjectType'] == 1 || $obj['ObjectType'] == 0) { // Category or Instance
-                // Go deeper
+            } elseif ($obj['ObjectType'] == 1 || $obj['ObjectType'] == 0) { 
                 $result = array_merge($result, $this->GetRecursiveVariables($childID));
             }
         }
         return $result;
     }
 
-    private function SyncVariable(int $localID, $value)
+    /**
+     * Returns true on success, false on failure
+     */
+    private function SyncVariable(int $localID, $value): bool
     {
-        if (!$this->InitConnection()) return;
+        if (!$this->InitConnection()) return false;
+        
+        // ResolveRemoteID handles the creation if AutoCreate is ON
         $remoteID = $this->ResolveRemoteID($localID);
 
         if ($remoteID > 0) {
             try {
                 $this->LogDebug("Pushing Value: " . json_encode($value) . " to Remote ID: $remoteID");
                 $this->rpcClient->SetValue($remoteID, $value);
+                return true;
             } catch (Exception $e) {
                 $this->LogDebug("Error setting value: " . $e->getMessage());
                 unset($this->idMappingCache[$localID]);
+                return false;
             }
         }
+        return false;
     }
 
     private function ResolveRemoteID(int $localID): int
@@ -176,7 +178,6 @@ class RemoteSync extends IPSModule
             $currentID = IPS_GetParent($currentID);
         }
 
-        // Walk Remote
         $currentRemoteID = $remoteRoot;
         $autoCreate = $this->ReadPropertyBoolean('AutoCreate');
 
@@ -194,11 +195,14 @@ class RemoteSync extends IPSModule
                         $type = $localObj['VariableType'];
                         $childID = $this->rpcClient->IPS_CreateVariable($type);
                     } else {
-                        // Dummy Instance
                         $childID = $this->rpcClient->IPS_CreateInstance("{485D0419-BE97-4548-AA9C-C083EB82E61E}");
                     }
-                    $this->rpcClient->IPS_SetParent($childID, $currentRemoteID);
-                    $this->rpcClient->IPS_SetName($childID, $nodeName);
+                    try {
+                        $this->rpcClient->IPS_SetParent($childID, $currentRemoteID);
+                        $this->rpcClient->IPS_SetName($childID, $nodeName);
+                    } catch (Exception $e) {
+                        return 0; // Creation failed
+                    }
                 } else {
                     return 0;
                 }
