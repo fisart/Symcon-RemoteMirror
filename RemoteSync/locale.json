@@ -1,0 +1,42 @@
+{
+    "translations": {
+        "de": {
+            "Remote Mirror Configuration": "Remote Mirror Konfiguration",
+            "Debug Mode": "Debug Modus (Ausführliches Log)",
+            "Authentication (Encrypted Variables)": "Authentifizierung (Verschlüsselte Variablen)",
+            "Ciphertext Variable ID": "Ciphertext Variablen-ID (URL/User/PW)",
+            "Key Variable ID": "Key Variablen-ID (Keys/IV/Tag)",
+            "Mirror Anchors": "Spiegel-Anker",
+            "Local Root Category": "Lokale Wurzel-Kategorie (Quelle)",
+            "Remote Root ID": "Remote Ziel-ID (Ziel-Kategorie)",
+            "Selection": "Auswahl",
+            "Objects to Sync": "Zu synchronisierende Objekte",
+            "Object": "Objekt (Variable oder Kategorie)",
+            "Active": "Aktiv",
+            "Use Auto-Create": "Fehlende Remote-Objekte erstellen",
+            "Connecting to remote...": "Verbinde zu Remote...",
+            "Remote Variable created:": "Remote Variable erstellt:",
+            "Remote Instance created:": "Remote Instanz erstellt:",
+            "Value pushed:": "Wert übertragen:"
+        },
+        "en": {
+            "Remote Mirror Configuration": "Remote Mirror Configuration",
+            "Debug Mode": "Debug Mode (Verbose Log)",
+            "Authentication (Encrypted Variables)": "Authentication (Encrypted Variables)",
+            "Ciphertext Variable ID": "Ciphertext Variable ID",
+            "Key Variable ID": "Key Variable ID",
+            "Mirror Anchors": "Mirror Anchors",
+            "Local Root Category": "Local Root Category (Source)",
+            "Remote Root ID": "Remote Root ID (Target)",
+            "Selection": "Selection",
+            "Objects to Sync": "Objects to Sync",
+            "Object": "Object (Variable or Category)",
+            "Active": "Active",
+            "Use Auto-Create": "Create missing remote objects",
+            "Connecting to remote...": "Connecting to remote...",
+            "Remote Variable created:": "Remote Variable created:",
+            "Remote Instance created:": "Remote Instance created:",
+            "Value pushed:": "Value pushed:"
+        }
+    }
+}

@@ -1,0 +1,27 @@
+{
+    "elements": [
+        { "type": "Label", "caption": "Remote Mirror Configuration" },
+        { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode" },
+        { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create" },
+
+        { "type": "Label", "caption": "Authentication (Encrypted Variables)" },
+        { "type": "SelectVariable", "name": "CipherVarID", "caption": "Ciphertext Variable ID" },
+        { "type": "SelectVariable", "name": "KeyVarID", "caption": "Key Variable ID" },
+
+        { "type": "Label", "caption": "Mirror Anchors" },
+        { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category" },
+        { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
+
+        { "type": "Label", "caption": "Selection" },
+        {
+            "type": "List",
+            "name": "SyncList",
+            "caption": "Objects to Sync",
+            "columns": [
+                { "name": "ObjectID", "caption": "Object", "width": "300px", "edit": { "type": "SelectObject" } },
+                { "name": "Active", "caption": "Active", "width": "50px", "edit": { "type": "CheckBox" } }
+            ],
+            "values": []
+        }
+    ]
+}
