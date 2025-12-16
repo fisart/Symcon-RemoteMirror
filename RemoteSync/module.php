@@ -36,23 +36,45 @@ class RemoteSync extends IPSModule
     {
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
         
-        // --- Populate Server List ---
+        // --- Populate Server Lists (Both Remote Target and Local Name) ---
         $accessData = $this->GetAccessData();
-        $serverOptions = [];
+        $serverOptions = [];        // Value = Integer ID (Key)
+        $localServerOptions = [];   // Value = String Name (Location)
 
         if ($accessData !== false) {
             foreach ($accessData as $key => $data) {
                 $name = $data['Location'] ?? "Server Key $key";
-                $serverOptions[] = ['caption' => $name, 'value' => $key];
+                
+                // Option list for "Target Remote Server" (Uses ID)
+                $serverOptions[] = [
+                    'caption' => $name, 
+                    'value' => $key
+                ];
+
+                // Option list for "Local Server Name" (Uses String Name)
+                // We exclude empty names to avoid config errors
+                if (!empty($data['Location'])) {
+                    $localServerOptions[] = [
+                        'caption' => $name, 
+                        'value' => $data['Location']
+                    ];
+                }
             }
         } else {
-            $serverOptions[] = ['caption' => "Please select Auth Variables and Apply", 'value' => 0];
+            $msg = ['caption' => "Please select Auth Variables and Apply", 'value' => 0];
+            $serverOptions[] = $msg;
+            $localServerOptions[] = ['caption' => "Please select Auth Variables and Apply", 'value' => ""];
         }
 
+        // Inject options into the form
         foreach ($form['elements'] as &$element) {
-            if (isset($element['name']) && $element['name'] == 'RemoteServerKey') {
-                $element['options'] = $serverOptions;
-                break;
+            if (isset($element['name'])) {
+                if ($element['name'] == 'RemoteServerKey') {
+                    $element['options'] = $serverOptions;
+                }
+                elseif ($element['name'] == 'LocalServerLocation') {
+                    $element['options'] = $localServerOptions;
+                }
             }
         }
 
@@ -136,13 +158,11 @@ class RemoteSync extends IPSModule
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
                 
-                // --- CASE 1: DELETION REQUESTED (Active=False, Delete=True) ---
+                // --- CASE 1: DELETION REQUESTED ---
                 if (empty($item['Active']) && !empty($item['Delete'])) {
                     if (IPS_ObjectExists($objID)) {
                         $this->LogDebug("Processing Deletion for Local ID: $objID");
-                        // We need the connection to delete
                         if ($this->InitConnection()) {
-                             // Find ID without creating it
                             $remoteID = $this->ResolveRemoteID($objID, false);
                             if ($remoteID > 0) {
                                 $this->DeleteRemoteObject($remoteID);
@@ -151,10 +171,10 @@ class RemoteSync extends IPSModule
                             }
                         }
                     }
-                    continue; // Skip the rest for this item
+                    continue; 
                 }
 
-                // --- CASE 2: NORMAL SYNC (Active=True) ---
+                // --- CASE 2: NORMAL SYNC ---
                 if (empty($item['Active'])) continue;
                 if (!IPS_ObjectExists($objID)) continue;
 
@@ -163,7 +183,6 @@ class RemoteSync extends IPSModule
                 
                 if ($continueInitialSync) {
                     $currentValue = GetValue($objID);
-                    // ResolveRemoteID(..., true) means create if missing
                     $success = $this->SyncVariable($objID, $currentValue);
                     if (!$success) {
                         $continueInitialSync = false;
@@ -277,7 +296,7 @@ class RemoteSync extends IPSModule
     private function DeleteRemoteObject(int $remoteID)
     {
         try {
-            // 1. Check for Children (e.g. Action Script)
+            // Check for Children
             $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
             
             if (is_array($children)) {
@@ -287,11 +306,10 @@ class RemoteSync extends IPSModule
                 }
             }
 
-            // 2. Delete the Object itself
+            // Delete Object
             $this->LogDebug("Deleting Remote Object: $remoteID");
             $this->rpcClient->IPS_DeleteObject($remoteID);
             
-            // Remove from cache
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }

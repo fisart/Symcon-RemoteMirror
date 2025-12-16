@@ -18,7 +18,12 @@
         { "type": "Label", "caption": "Required for 'Remote Action' to work." },
         { "type": "NumberSpinner", "name": "RemoteCipherID", "caption": "Remote ID: Encrypted Data" },
         { "type": "NumberSpinner", "name": "RemoteKeyID", "caption": "Remote ID: Encrypted Keys" },
-        { "type": "ValidationTextBox", "name": "LocalServerLocation", "caption": "Local Server Name (in Encrypted DB)" },
+        { 
+            "type": "Select", 
+            "name": "LocalServerLocation", 
+            "caption": "Local Server Name (in Encrypted DB)",
+            "options": []
+        },
 
         { "type": "Label", "caption": "Mirror Anchors" },
         { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category (Save to populate list)" },
