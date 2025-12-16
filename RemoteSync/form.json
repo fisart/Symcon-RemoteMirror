@@ -2,14 +2,14 @@
     "elements": [
         { "type": "Label", "caption": "Remote Mirror Configuration" },
         { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode" },
-        { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create" },
+        { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
 
-        { "type": "Label", "caption": "Authentication (Encrypted Variables)" },
+        { "type": "Label", "caption": "Authentication" },
         { "type": "SelectVariable", "name": "CipherVarID", "caption": "Ciphertext Variable ID" },
         { "type": "SelectVariable", "name": "KeyVarID", "caption": "Key Variable ID" },
 
         { "type": "Label", "caption": "Mirror Anchors" },
-        { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category" },
+        { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category (Save to populate list)" },
         { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
 
         { "type": "Label", "caption": "Selection" },
@@ -17,9 +17,13 @@
             "type": "List",
             "name": "SyncList",
             "caption": "Objects to Sync",
+            "add": false,
+            "delete": false,
+            "rowCount": 20,
             "columns": [
-                { "name": "ObjectID", "caption": "Object", "width": "300px", "edit": { "type": "SelectObject" } },
-                { "name": "Active", "caption": "Active", "width": "50px", "edit": { "type": "CheckBox" } }
+                { "name": "ObjectID", "caption": "ID", "width": "70px", "edit": { "type": "Label" } },
+                { "name": "Name", "caption": "Variable Name", "width": "auto", "edit": { "type": "Label" } },
+                { "name": "Active", "caption": "Sync", "width": "70px", "edit": { "type": "CheckBox" } }
             ],
             "values": []
         }
