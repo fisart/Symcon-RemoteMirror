@@ -1,0 +1,15 @@
+{
+    "id": "{C6D3D6A3-0442-4217-9150-70588661C02D}",
+    "name": "RemoteSync",
+    "type": 3,
+    "vendor": "Remote Utilities",
+    "aliases": [
+        "Remote Mirror",
+        "Symcon Sync"
+    ],
+    "url": "https://github.com/YourUsername/Symcon-RemoteMirror",
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "RS"
+}
