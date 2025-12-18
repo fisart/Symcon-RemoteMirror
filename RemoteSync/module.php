@@ -469,9 +469,14 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
         $children = IPS_GetChildrenIDs($parentID);
         foreach ($children as $childID) {
             $obj = IPS_GetObject($childID);
+            
+            // If it's a Variable, add it to the list
             if ($obj['ObjectType'] == 2) { 
                 $result[] = $childID;
-            } elseif ($obj['ObjectType'] == 1 || $obj['ObjectType'] == 0) { 
+            }
+            
+            // If it has children (regardless of whether it is a Category, Instance, Script, etc.), go deeper
+            if ($obj['HasChildren']) { 
                 $result = array_merge($result, $this->GetRecursiveVariables($childID));
             }
         }
