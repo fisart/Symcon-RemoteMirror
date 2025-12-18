@@ -38,23 +38,21 @@ class RemoteSync extends IPSModule
         $serverOptions = [];
 
         if ($secID > 0 && IPS_InstanceExists($secID)) {
-            // Check if function exists to avoid crashes during development/updates
             if (function_exists('SEC_GetKeys')) {
                 try {
-                    // Call SEC_GetKeys -> Returns JSON String
                     $jsonKeys = SEC_GetKeys($secID);
                     $keys = json_decode($jsonKeys, true);
                     
                     if (is_array($keys)) {
                         foreach ($keys as $k) {
-                            $serverOptions[] = [
-                                'caption' => $k,
-                                'value'   => $k
-                            ];
+                            $serverOptions[] = ['caption' => $k, 'value' => $k];
                         }
+                    } else {
+                        // DEBUG: Log if keys format is wrong
+                        $this->LogDebug("Form Load: SEC_GetKeys returned invalid JSON or not an array.");
                     }
                 } catch (Exception $e) {
-                    // Fail silently in form generation
+                    $this->LogDebug("Form Load Error: " . $e->getMessage());
                 }
             } else {
                 $serverOptions[] = ['caption' => "Function SEC_GetKeys not found", 'value' => ""];
@@ -63,7 +61,6 @@ class RemoteSync extends IPSModule
             $serverOptions[] = ['caption' => "Select Secrets Module and Apply", 'value' => ""];
         }
 
-        // Inject options into BOTH Select fields (Remote Target & Local Name)
         foreach ($form['elements'] as &$element) {
             if (isset($element['name'])) {
                 if ($element['name'] == 'RemoteServerKey' || $element['name'] == 'LocalServerKey') {
@@ -122,13 +119,11 @@ class RemoteSync extends IPSModule
     {
         parent::ApplyChanges();
 
-        // 1. Clean up
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
             $this->UnregisterMessage($senderID, VM_UPDATE);
         }
 
-        // 2. Load Config
         $syncList = json_decode($this->ReadPropertyString('SyncList'), true);
         $localRoot = $this->ReadPropertyInteger('LocalRootID');
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
@@ -147,12 +142,11 @@ class RemoteSync extends IPSModule
             return;
         }
 
-        // 3. Process Sync List
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
                 
-                // --- CASE 1: DELETION ---
+                // DELETION
                 if (empty($item['Active']) && !empty($item['Delete'])) {
                     if (IPS_ObjectExists($objID)) {
                         $this->LogDebug("Processing Deletion for Local ID: $objID");
@@ -166,7 +160,7 @@ class RemoteSync extends IPSModule
                     continue; 
                 }
 
-                // --- CASE 2: NORMAL SYNC ---
+                // SYNC
                 if (empty($item['Active'])) continue;
                 if (!IPS_ObjectExists($objID)) continue;
 
@@ -178,7 +172,7 @@ class RemoteSync extends IPSModule
                     $success = $this->SyncVariable($objID, $currentValue);
                     if (!$success) {
                         $continueInitialSync = false;
-                        $this->LogDebug("Initial sync failed. Stopping bulk update.");
+                        $this->LogDebug("Initial sync failed. Stopping bulk update to prevent timeout.");
                     }
                 }
             }
@@ -205,7 +199,11 @@ class RemoteSync extends IPSModule
 
     private function SyncVariable(int $localID, $value): bool
     {
-        if (!$this->InitConnection()) return false;
+        if (!$this->InitConnection()) {
+            // DEBUG: Log explicitly if init fails here
+            $this->LogDebug("SyncVariable: Connection Init failed.");
+            return false;
+        }
         
         $remoteID = $this->ResolveRemoteID($localID, true);
 
@@ -216,10 +214,12 @@ class RemoteSync extends IPSModule
                 $this->EnsureRemoteAction($localID, $remoteID);
                 return true;
             } catch (Exception $e) {
-                $this->LogDebug("RPC Error: " . $e->getMessage());
+                $this->LogDebug("RPC Error in SetValue: " . $e->getMessage());
                 unset($this->idMappingCache[$localID]);
                 return false;
             }
+        } else {
+            $this->LogDebug("SyncVariable: Could not resolve Remote ID for Local ID $localID");
         }
         return false;
     }
@@ -244,25 +244,48 @@ class RemoteSync extends IPSModule
 
         foreach ($pathStack as $index => $nodeName) {
             if(!$this->rpcClient) return 0;
+            
             try {
                 $childID = @$this->rpcClient->IPS_GetObjectIDByName($nodeName, $currentRemoteID);
-            } catch (Exception $e) { $childID = 0; }
+            } catch (Exception $e) { 
+                // DEBUG: Log why lookup failed
+                $this->LogDebug("Lookup failed for node '$nodeName' under Parent $currentRemoteID. Error: " . $e->getMessage());
+                $childID = 0; 
+            }
 
             if ($childID == 0) {
                 if ($autoCreate) {
-                    $isLeaf = ($index === count($pathStack) - 1);
-                    if ($isLeaf) {
+                    $this->LogDebug("Auto-Creating: $nodeName at Remote Parent $currentRemoteID");
+                    
+                    if ($index === count($pathStack) - 1) {
+                        // Leaf = Variable
                         $localObj = IPS_GetVariable($localID);
                         $type = $localObj['VariableType'];
-                        $childID = $this->rpcClient->IPS_CreateVariable($type);
+                        try {
+                            $childID = $this->rpcClient->IPS_CreateVariable($type);
+                        } catch (Exception $e) {
+                             $this->LogDebug("Create Variable Failed: " . $e->getMessage());
+                             return 0;
+                        }
                     } else {
-                        $childID = $this->rpcClient->IPS_CreateInstance("{485D0419-BE97-4548-AA9C-C083EB82E61E}");
+                        // Node = Dummy Instance
+                        try {
+                            $childID = $this->rpcClient->IPS_CreateInstance("{485D0419-BE97-4548-AA9C-C083EB82E61E}");
+                        } catch (Exception $e) {
+                             $this->LogDebug("Create Instance Failed: " . $e->getMessage());
+                             return 0;
+                        }
                     }
+
                     try {
                         $this->rpcClient->IPS_SetParent($childID, $currentRemoteID);
                         $this->rpcClient->IPS_SetName($childID, $nodeName);
-                    } catch (Exception $e) { return 0; }
+                    } catch (Exception $e) { 
+                        $this->LogDebug("SetParent/SetName Failed: " . $e->getMessage());
+                        return 0; 
+                    }
                 } else {
+                    $this->LogDebug("Object '$nodeName' missing and AutoCreate is OFF.");
                     return 0;
                 }
             }
@@ -276,6 +299,58 @@ class RemoteSync extends IPSModule
         $this->idMappingCache[$localID] = $currentRemoteID;
         return $currentRemoteID;
     }
+
+    private function InitConnection()
+    {
+        if ($this->rpcClient !== null) return true;
+
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $key = $this->ReadPropertyString('RemoteServerKey'); 
+
+        if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) {
+             $this->LogDebug("InitConnection: Invalid Configuration (Missing Module or Key).");
+             return false;
+        }
+
+        try {
+            if (!function_exists('SEC_GetSecret')) {
+                $this->LogDebug("InitConnection: Function SEC_GetSecret does not exist.");
+                return false;
+            }
+            
+            // Get JSON String
+            $json = SEC_GetSecret($secID, $key);
+            
+            // DEBUG: Log raw response (careful with passwords, maybe log length)
+            $this->LogDebug("SEC_GetSecret returned length: " . strlen($json));
+            // Uncomment next line to see full JSON in debug (Warning: Shows Password!)
+            // $this->LogDebug("SEC Response: " . $json); 
+
+            // Decode
+            $serverConfig = json_decode($json, true);
+            
+            if ($serverConfig === null) {
+                $this->LogDebug("InitConnection: JSON Decode Failed. Error: " . json_last_error_msg());
+                return false;
+            }
+
+        } catch (Exception $e) {
+            $this->LogDebug("Failed to call SEC_GetSecret: " . $e->getMessage());
+            return false;
+        }
+
+        if (!$serverConfig || !isset($serverConfig['URL'])) {
+            $this->LogDebug("InitConnection: Decoded config missing 'URL'. Dump: " . print_r($serverConfig, true));
+            return false;
+        }
+        
+        $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
+        
+        $this->rpcClient = new SimpleJSONRPC($url);
+        return true;
+    }
+
+    // --- (Rest of the functions remain the same, just keeping them for completeness) ---
 
     private function DeleteRemoteObject(int $remoteID)
     {
@@ -293,8 +368,6 @@ class RemoteSync extends IPSModule
         } catch (Exception $e) { }
     }
 
-    // --- Profile Logic ---
-    
     private function EnsureRemoteProfile(int $localID, int $remoteID)
     {
         $localVar = IPS_GetVariable($localID);
@@ -337,12 +410,10 @@ class RemoteSync extends IPSModule
         } catch (Exception $e) { }
     }
 
-    // --- Reverse Control (Delegated to Remote Secrets Module) ---
-
     private function EnsureRemoteAction(int $localID, int $remoteID)
     {
         $remSecID = $this->ReadPropertyInteger('RemotePasswordModuleID');
-        $locKey = $this->ReadPropertyString('LocalServerKey'); // String
+        $locKey = $this->ReadPropertyString('LocalServerKey'); 
         
         $syncList = json_decode($this->ReadPropertyString('SyncList'), true);
         $actionEnabled = false;
@@ -380,7 +451,6 @@ class RemoteSync extends IPSModule
                 $this->rpcClient->IPS_SetName($scriptID, "ActionScript");
                 $this->rpcClient->IPS_SetHidden($scriptID, true); 
                 
-                // Inject Clean Code using Remote SEC Module + JSON Decode
                 $code = $this->GenerateActionScriptCode($localID, $remSecID, $locKey);
                 $this->rpcClient->IPS_SetScriptContent($scriptID, $code);
 
@@ -391,10 +461,8 @@ class RemoteSync extends IPSModule
 
     private function GenerateActionScriptCode($localID, $remSecID, $locKey)
     {
-        // Quote the string key safely
         $locKeySafe = str_replace("'", "\\'", $locKey);
         
-        // Note: We perform json_decode on the remote side
         return "<?php
 /* Auto-Generated by RemoteSync Module */
 \$targetID = $localID;
@@ -427,55 +495,15 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
     }
 
-    // --- Connection Helper (Delegated to Local Secrets Module) ---
-
-    private function InitConnection()
-    {
-        if ($this->rpcClient !== null) return true;
-
-        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-        $key = $this->ReadPropertyString('RemoteServerKey'); // String
-
-        if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) return false;
-
-        // Call the Secrets Module
-        try {
-            if (!function_exists('SEC_GetSecret')) return false;
-            
-            // Get JSON String
-            $json = SEC_GetSecret($secID, $key);
-            // Decode
-            $serverConfig = json_decode($json, true);
-
-        } catch (Exception $e) {
-            $this->LogDebug("Failed to call SEC_GetSecret: " . $e->getMessage());
-            return false;
-        }
-
-        if (!$serverConfig || !isset($serverConfig['URL'])) {
-            $this->LogDebug("No valid credentials returned for Key $key");
-            return false;
-        }
-        
-        $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
-        
-        $this->rpcClient = new SimpleJSONRPC($url);
-        return true;
-    }
-
     private function GetRecursiveVariables($parentID)
     {
         $result = [];
         $children = IPS_GetChildrenIDs($parentID);
         foreach ($children as $childID) {
             $obj = IPS_GetObject($childID);
-            
-            // If it's a Variable, add it to the list
             if ($obj['ObjectType'] == 2) { 
                 $result[] = $childID;
             }
-            
-            // If it has children (regardless of whether it is a Category, Instance, Script, etc.), go deeper
             if ($obj['HasChildren']) { 
                 $result = array_merge($result, $this->GetRecursiveVariables($childID));
             }
