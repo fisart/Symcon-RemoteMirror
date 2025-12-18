@@ -45,7 +45,7 @@ class RemoteSync extends IPSModule
                             $serverOptions[] = ['caption' => $k, 'value' => $k];
                         }
                     }
-                } catch (Exception $e) { /* Fail silently */ }
+                } catch (Exception $e) { /* Fail silently in form */ }
             } else {
                 $serverOptions[0]['caption'] = "Error: SEC_GetKeys function missing";
             }
@@ -112,7 +112,7 @@ class RemoteSync extends IPSModule
         parent::ApplyChanges();
 
         $this->rpcClient = null;
-        $this->LogDebug("ApplyChanges Triggered.");
+        $this->LogDebug("ApplyChanges Triggered. DebugMode is ACTIVE.");
 
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
@@ -127,38 +127,24 @@ class RemoteSync extends IPSModule
         $activeCount = 0;
         $continueInitialSync = true;
 
-        // --- DIAGNOSTIC LOGGING ---
         if ($localRoot == 0 || !IPS_ObjectExists($localRoot)) {
-            $this->LogDebug("Config Error: Local Root ID is invalid (ID: $localRoot).");
-            $this->SetStatus(IS_INACTIVE);
-            return;
-        }
-
-        // Detailed check for Secrets Module
-        if ($secID == 0) {
-            $this->LogDebug("Config Error: Local Secrets Module ID is 0. Please select an instance.");
-            $this->SetStatus(IS_INACTIVE);
-            return;
-        } elseif (!IPS_ObjectExists($secID)) {
-            $this->LogDebug("Config Error: The selected Secrets ID ($secID) does not exist.");
-            $this->SetStatus(IS_INACTIVE);
-            return;
-        } elseif (!IPS_InstanceExists($secID)) {
-            // It exists, but is it an instance?
-            $obj = IPS_GetObject($secID);
-            $type = $obj['ObjectType']; // 1=Instance
-            $this->LogDebug("Config Error: The selected ID ($secID) exists but is NOT an Instance. Object Type is: $type");
+            $this->LogDebug("Config Error: Local Root ID invalid.");
             $this->SetStatus(IS_INACTIVE);
             return;
         }
         
-        if ($remoteKey === '') {
-            $this->LogDebug("Config Error: Remote Server Key is empty.");
+        if ($secID == 0 || !IPS_InstanceExists($secID)) {
+            $this->LogDebug("Config Error: Secrets Module ID invalid.");
             $this->SetStatus(IS_INACTIVE); 
             return;
         }
 
-        // --- PROCESSING ---
+        if ($remoteKey === '') {
+            $this->LogDebug("Config Error: Remote Server Key empty.");
+            $this->SetStatus(IS_INACTIVE); 
+            return;
+        }
+
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
@@ -323,38 +309,47 @@ class RemoteSync extends IPSModule
         $key = $this->ReadPropertyString('RemoteServerKey'); 
 
         if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) {
-             $this->LogDebug("InitConnection: Invalid Configuration (ID: $secID, Key: $key)");
+             $this->LogDebug("InitConnection: Invalid Config.");
              return false;
         }
 
         try {
             if (!function_exists('SEC_GetSecret')) {
-                $this->LogDebug("InitConnection: SEC_GetSecret function missing.");
+                $this->LogDebug("InitConnection: SEC_GetSecret missing.");
                 return false;
             }
             
             $json = SEC_GetSecret($secID, $key);
-            $serverConfig = json_decode($json, true);
             
-            if ($serverConfig === null) {
+            // --- DEBUG OUTPUT FOR RAW JSON ---
+            $this->LogDebug("RAW JSON from SEC: " . $json);
+            // ---------------------------------
+
+            $config = json_decode($json, true);
+            
+            if ($config === null) {
                 $this->LogDebug("InitConnection: JSON Decode Failed. Raw: " . $json);
                 return false;
             }
+
+            // Case-Insensitive Fallback
+            $url = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? null;
+            $user = $config['User'] ?? $config['user'] ?? $config['Username'] ?? null;
+            $pw = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? null;
+
+            if (!$url || !$user || !$pw) {
+                $this->LogDebug("InitConnection: Config Missing Fields. Keys found: " . implode(", ", array_keys($config)));
+                return false;
+            }
+            
+            $connectionUrl = 'https://'.$user.":".$pw."@".$url."/api/";
+            $this->rpcClient = new SimpleJSONRPC($connectionUrl);
+            return true;
 
         } catch (Exception $e) {
             $this->LogDebug("InitConnection Exception: " . $e->getMessage());
             return false;
         }
-
-        if (!$serverConfig || !isset($serverConfig['URL'])) {
-            $this->LogDebug("InitConnection: Config missing 'URL'.");
-            return false;
-        }
-        
-        $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
-        
-        $this->rpcClient = new SimpleJSONRPC($url);
-        return true;
     }
 
     private function DeleteRemoteObject(int $remoteID)
@@ -479,9 +474,15 @@ if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
 \$json = SEC_GetSecret(\$secID, \$key);
 \$creds = json_decode(\$json, true);
 
-if (!\$creds || !isset(\$creds['URL'])) die('Credentials not found or Invalid JSON');
+if (!\$creds) die('Credentials not found');
 
-\$url = 'https://'.\$creds['User'].':'.\$creds['PW'].'@'.\$creds['URL'].'/api/';
+\$url = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
+\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
+\$pw = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
+
+if (!\$url) die('Invalid config structure');
+
+\$connUrl = 'https://'.\$user.':'.\$pw.'@'.\$url.'/api/';
 
 class MiniRPC {
     private \$url;
@@ -494,7 +495,7 @@ class MiniRPC {
     }
 }
 
-\$rpc = new MiniRPC(\$url);
+\$rpc = new MiniRPC(\$connUrl);
 \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
 SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
