@@ -30,7 +30,11 @@
         },
 
         { "type": "Label", "caption": "Mirror Anchors" },
-        { "type": "SelectCategory", "name": "LocalRootID", "caption": "Local Root Category (Save to populate list)" },
+        { 
+            "type": "SelectObject", 
+            "name": "LocalRootID", 
+            "caption": "Local Root Object (Save to populate list)" 
+        },
         { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
 
         { "type": "Label", "caption": "Selection" },
