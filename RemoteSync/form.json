@@ -9,8 +9,7 @@
         { 
             "type": "SelectInstance", 
             "name": "LocalPasswordModuleID", 
-            "caption": "Local Secrets Module",
-            "validModules": [] 
+            "caption": "Local Secrets Module"
         },
         { 
             "type": "Select", 
