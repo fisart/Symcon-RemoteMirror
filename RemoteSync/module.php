@@ -35,7 +35,13 @@ class RemoteSync extends IPSModule
         
         // --- Populate Server Keys from Secrets Module ---
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        
+        // Initialize with a default empty option to prevent "Current value '' is not available" error
         $serverOptions = [];
+        $serverOptions[] = [
+            'caption' => "Please select...",
+            'value'   => ""
+        ];
 
         if ($secID > 0 && IPS_InstanceExists($secID)) {
             if (function_exists('SEC_GetKeys')) {
@@ -45,22 +51,27 @@ class RemoteSync extends IPSModule
                     
                     if (is_array($keys)) {
                         foreach ($keys as $k) {
-                            $serverOptions[] = ['caption' => $k, 'value' => $k];
+                            $serverOptions[] = [
+                                'caption' => $k,
+                                'value'   => $k
+                            ];
                         }
                     } else {
-                        // DEBUG: Log if keys format is wrong
-                        $this->LogDebug("Form Load: SEC_GetKeys returned invalid JSON or not an array.");
+                        // Keep the default option if keys are invalid
                     }
                 } catch (Exception $e) {
-                    $this->LogDebug("Form Load Error: " . $e->getMessage());
+                    // Keep the default option on error
                 }
             } else {
-                $serverOptions[] = ['caption' => "Function SEC_GetKeys not found", 'value' => ""];
+                // If function missing, update caption to warn user
+                $serverOptions[0]['caption'] = "Error: SEC_GetKeys function missing";
             }
         } else {
-            $serverOptions[] = ['caption' => "Select Secrets Module and Apply", 'value' => ""];
+            // Update caption to guide user
+            $serverOptions[0]['caption'] = "Select Secrets Module and Apply first";
         }
 
+        // Inject options into BOTH Select fields
         foreach ($form['elements'] as &$element) {
             if (isset($element['name'])) {
                 if ($element['name'] == 'RemoteServerKey' || $element['name'] == 'LocalServerKey') {
@@ -200,7 +211,6 @@ class RemoteSync extends IPSModule
     private function SyncVariable(int $localID, $value): bool
     {
         if (!$this->InitConnection()) {
-            // DEBUG: Log explicitly if init fails here
             $this->LogDebug("SyncVariable: Connection Init failed.");
             return false;
         }
@@ -248,7 +258,6 @@ class RemoteSync extends IPSModule
             try {
                 $childID = @$this->rpcClient->IPS_GetObjectIDByName($nodeName, $currentRemoteID);
             } catch (Exception $e) { 
-                // DEBUG: Log why lookup failed
                 $this->LogDebug("Lookup failed for node '$nodeName' under Parent $currentRemoteID. Error: " . $e->getMessage());
                 $childID = 0; 
             }
@@ -258,7 +267,6 @@ class RemoteSync extends IPSModule
                     $this->LogDebug("Auto-Creating: $nodeName at Remote Parent $currentRemoteID");
                     
                     if ($index === count($pathStack) - 1) {
-                        // Leaf = Variable
                         $localObj = IPS_GetVariable($localID);
                         $type = $localObj['VariableType'];
                         try {
@@ -268,7 +276,6 @@ class RemoteSync extends IPSModule
                              return 0;
                         }
                     } else {
-                        // Node = Dummy Instance
                         try {
                             $childID = $this->rpcClient->IPS_CreateInstance("{485D0419-BE97-4548-AA9C-C083EB82E61E}");
                         } catch (Exception $e) {
@@ -318,15 +325,8 @@ class RemoteSync extends IPSModule
                 return false;
             }
             
-            // Get JSON String
             $json = SEC_GetSecret($secID, $key);
-            
-            // DEBUG: Log raw response (careful with passwords, maybe log length)
             $this->LogDebug("SEC_GetSecret returned length: " . strlen($json));
-            // Uncomment next line to see full JSON in debug (Warning: Shows Password!)
-            // $this->LogDebug("SEC Response: " . $json); 
-
-            // Decode
             $serverConfig = json_decode($json, true);
             
             if ($serverConfig === null) {
@@ -349,8 +349,6 @@ class RemoteSync extends IPSModule
         $this->rpcClient = new SimpleJSONRPC($url);
         return true;
     }
-
-    // --- (Rest of the functions remain the same, just keeping them for completeness) ---
 
     private function DeleteRemoteObject(int $remoteID)
     {
