@@ -12,19 +12,16 @@ class RemoteSync extends IPSModule
     {
         parent::Create();
 
-        // Register Properties
         $this->RegisterPropertyBoolean('DebugMode', false);
         $this->RegisterPropertyBoolean('AutoCreate', true);
         
-        // Outgoing Auth
-        $this->RegisterPropertyInteger('CipherVarID', 0);
-        $this->RegisterPropertyInteger('KeyVarID', 0);
-        $this->RegisterPropertyInteger('RemoteServerKey', 0); 
+        // Local Auth (Secrets Module)
+        $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
+        $this->RegisterPropertyString('RemoteServerKey', ''); 
         
-        // Incoming Auth (Reverse Control)
-        $this->RegisterPropertyInteger('RemoteCipherID', 0);
-        $this->RegisterPropertyInteger('RemoteKeyID', 0);
-        $this->RegisterPropertyString('LocalServerLocation', '');
+        // Remote Auth (Secrets Module on Remote System)
+        $this->RegisterPropertyInteger('RemotePasswordModuleID', 0);
+        $this->RegisterPropertyString('LocalServerKey', '');
 
         // Mirror Settings
         $this->RegisterPropertyInteger('LocalRootID', 0);
@@ -36,44 +33,41 @@ class RemoteSync extends IPSModule
     {
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
         
-        // --- Populate Server Lists (Both Remote Target and Local Name) ---
-        $accessData = $this->GetAccessData();
-        $serverOptions = [];        // Value = Integer ID (Key)
-        $localServerOptions = [];   // Value = String Name (Location)
+        // --- Populate Server Keys from Secrets Module ---
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $serverOptions = [];
 
-        if ($accessData !== false) {
-            foreach ($accessData as $key => $data) {
-                $name = $data['Location'] ?? "Server Key $key";
-                
-                // Option list for "Target Remote Server" (Uses ID)
-                $serverOptions[] = [
-                    'caption' => $name, 
-                    'value' => $key
-                ];
-
-                // Option list for "Local Server Name" (Uses String Name)
-                // We exclude empty names to avoid config errors
-                if (!empty($data['Location'])) {
-                    $localServerOptions[] = [
-                        'caption' => $name, 
-                        'value' => $data['Location']
-                    ];
+        if ($secID > 0 && IPS_InstanceExists($secID)) {
+            // Check if function exists to avoid crashes during development/updates
+            if (function_exists('SEC_GetKeys')) {
+                try {
+                    // Call SEC_GetKeys -> Returns JSON String
+                    $jsonKeys = SEC_GetKeys($secID);
+                    $keys = json_decode($jsonKeys, true);
+                    
+                    if (is_array($keys)) {
+                        foreach ($keys as $k) {
+                            $serverOptions[] = [
+                                'caption' => $k,
+                                'value'   => $k
+                            ];
+                        }
+                    }
+                } catch (Exception $e) {
+                    // Fail silently in form generation
                 }
+            } else {
+                $serverOptions[] = ['caption' => "Function SEC_GetKeys not found", 'value' => ""];
             }
         } else {
-            $msg = ['caption' => "Please select Auth Variables and Apply", 'value' => 0];
-            $serverOptions[] = $msg;
-            $localServerOptions[] = ['caption' => "Please select Auth Variables and Apply", 'value' => ""];
+            $serverOptions[] = ['caption' => "Select Secrets Module and Apply", 'value' => ""];
         }
 
-        // Inject options into the form
+        // Inject options into BOTH Select fields (Remote Target & Local Name)
         foreach ($form['elements'] as &$element) {
             if (isset($element['name'])) {
-                if ($element['name'] == 'RemoteServerKey') {
+                if ($element['name'] == 'RemoteServerKey' || $element['name'] == 'LocalServerKey') {
                     $element['options'] = $serverOptions;
-                }
-                elseif ($element['name'] == 'LocalServerLocation') {
-                    $element['options'] = $localServerOptions;
                 }
             }
         }
@@ -83,7 +77,6 @@ class RemoteSync extends IPSModule
         $savedListJSON = $this->ReadPropertyString('SyncList');
         $savedList = json_decode($savedListJSON, true);
 
-        // Map Saved States
         $activeMap = [];
         $actionMap = [];
         $deleteMap = [];
@@ -138,7 +131,8 @@ class RemoteSync extends IPSModule
         // 2. Load Config
         $syncList = json_decode($this->ReadPropertyString('SyncList'), true);
         $localRoot = $this->ReadPropertyInteger('LocalRootID');
-        $remoteServerKey = $this->ReadPropertyInteger('RemoteServerKey');
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $remoteKey = $this->ReadPropertyString('RemoteServerKey');
         
         $activeCount = 0;
         $continueInitialSync = true;
@@ -148,7 +142,7 @@ class RemoteSync extends IPSModule
             return;
         }
         
-        if ($remoteServerKey == 0) {
+        if ($secID == 0 || !IPS_InstanceExists($secID) || $remoteKey === '') {
             $this->SetStatus(IS_INACTIVE); 
             return;
         }
@@ -158,7 +152,7 @@ class RemoteSync extends IPSModule
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
                 
-                // --- CASE 1: DELETION REQUESTED ---
+                // --- CASE 1: DELETION ---
                 if (empty($item['Active']) && !empty($item['Delete'])) {
                     if (IPS_ObjectExists($objID)) {
                         $this->LogDebug("Processing Deletion for Local ID: $objID");
@@ -166,8 +160,6 @@ class RemoteSync extends IPSModule
                             $remoteID = $this->ResolveRemoteID($objID, false);
                             if ($remoteID > 0) {
                                 $this->DeleteRemoteObject($remoteID);
-                            } else {
-                                $this->LogDebug("Remote object not found, nothing to delete.");
                             }
                         }
                     }
@@ -215,17 +207,13 @@ class RemoteSync extends IPSModule
     {
         if (!$this->InitConnection()) return false;
         
-        // Pass 'true' to create if missing
         $remoteID = $this->ResolveRemoteID($localID, true);
 
         if ($remoteID > 0) {
             try {
                 $this->LogDebug("Pushing Value: " . json_encode($value) . " to Remote ID: $remoteID");
                 $this->rpcClient->SetValue($remoteID, $value);
-                
-                // Handle Action Script
                 $this->EnsureRemoteAction($localID, $remoteID);
-                
                 return true;
             } catch (Exception $e) {
                 $this->LogDebug("RPC Error: " . $e->getMessage());
@@ -243,7 +231,6 @@ class RemoteSync extends IPSModule
         $localRoot = $this->ReadPropertyInteger('LocalRootID');
         $remoteRoot = $this->ReadPropertyInteger('RemoteRootID');
 
-        // Build path relative to root
         $pathStack = [];
         $currentID = $localID;
         while ($currentID != $localRoot) {
@@ -274,10 +261,7 @@ class RemoteSync extends IPSModule
                     try {
                         $this->rpcClient->IPS_SetParent($childID, $currentRemoteID);
                         $this->rpcClient->IPS_SetName($childID, $nodeName);
-                    } catch (Exception $e) {
-                         $this->LogDebug("Creation failed for $nodeName: " . $e->getMessage());
-                         return 0;
-                    }
+                    } catch (Exception $e) { return 0; }
                 } else {
                     return 0;
                 }
@@ -296,27 +280,17 @@ class RemoteSync extends IPSModule
     private function DeleteRemoteObject(int $remoteID)
     {
         try {
-            // Check for Children
             $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
-            
             if (is_array($children)) {
                 foreach ($children as $childID) {
-                    $this->LogDebug("Deleting child object $childID first...");
                     $this->rpcClient->IPS_DeleteObject($childID);
                 }
             }
-
-            // Delete Object
-            $this->LogDebug("Deleting Remote Object: $remoteID");
             $this->rpcClient->IPS_DeleteObject($remoteID);
-            
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }
-
-        } catch (Exception $e) {
-            $this->LogDebug("Failed to delete remote object: " . $e->getMessage());
-        }
+        } catch (Exception $e) { }
     }
 
     // --- Profile Logic ---
@@ -332,9 +306,7 @@ class RemoteSync extends IPSModule
 
         try {
             @$this->rpcClient->IPS_SetVariableCustomProfile($remoteID, $profileName);
-        } catch (Exception $e) {
-            $this->LogDebug("Failed to assign profile $profileName: " . $e->getMessage());
-        }
+        } catch (Exception $e) { }
     }
 
     private function SyncProfileToRemote($profileName, $varType)
@@ -362,18 +334,15 @@ class RemoteSync extends IPSModule
                 $this->rpcClient->IPS_SetVariableProfileAssociation($profileName, $assoc['Value'], $assoc['Name'], $assoc['Icon'], $assoc['Color']);
             }
             $this->profileCache[] = $profileName;
-        } catch (Exception $e) {
-            $this->LogDebug("Error creating profile $profileName: " . $e->getMessage());
-        }
+        } catch (Exception $e) { }
     }
 
-    // --- Reverse Control / Action Script Logic ---
+    // --- Reverse Control (Delegated to Remote Secrets Module) ---
 
     private function EnsureRemoteAction(int $localID, int $remoteID)
     {
-        $remCipher = $this->ReadPropertyInteger('RemoteCipherID');
-        $remKey = $this->ReadPropertyInteger('RemoteKeyID');
-        $locName = $this->ReadPropertyString('LocalServerLocation');
+        $remSecID = $this->ReadPropertyInteger('RemotePasswordModuleID');
+        $locKey = $this->ReadPropertyString('LocalServerKey'); // String
         
         $syncList = json_decode($this->ReadPropertyString('SyncList'), true);
         $actionEnabled = false;
@@ -387,10 +356,8 @@ class RemoteSync extends IPSModule
             }
         }
 
-        if (!$actionEnabled || $remCipher == 0 || $remKey == 0 || $locName == '') {
-            try {
-                @$this->rpcClient->IPS_SetVariableCustomAction($remoteID, 0);
-            } catch (Exception $e) { }
+        if (!$actionEnabled || $remSecID == 0 || $locKey === '') {
+            try { @$this->rpcClient->IPS_SetVariableCustomAction($remoteID, 0); } catch (Exception $e) { }
             return;
         }
 
@@ -407,55 +374,39 @@ class RemoteSync extends IPSModule
         }
 
         if ($scriptID == 0) {
-            $this->LogDebug("Creating Reverse Action Script for Local ID $localID");
             try {
                 $scriptID = $this->rpcClient->IPS_CreateScript(0); 
                 $this->rpcClient->IPS_SetParent($scriptID, $remoteID);
                 $this->rpcClient->IPS_SetName($scriptID, "ActionScript");
                 $this->rpcClient->IPS_SetHidden($scriptID, true); 
                 
-                $code = $this->GenerateActionScriptCode($localID, $remCipher, $remKey, $locName);
+                // Inject Clean Code using Remote SEC Module + JSON Decode
+                $code = $this->GenerateActionScriptCode($localID, $remSecID, $locKey);
                 $this->rpcClient->IPS_SetScriptContent($scriptID, $code);
 
                 $this->rpcClient->IPS_SetVariableCustomAction($remoteID, $scriptID);
-            } catch (Exception $e) {
-                $this->LogDebug("Failed to create Action Script: " . $e->getMessage());
-            }
+            } catch (Exception $e) { }
         }
     }
 
-    private function GenerateActionScriptCode($localID, $remCipher, $remKey, $locName)
+    private function GenerateActionScriptCode($localID, $remSecID, $locKey)
     {
+        // Quote the string key safely
+        $locKeySafe = str_replace("'", "\\'", $locKey);
+        
+        // Note: We perform json_decode on the remote side
         return "<?php
 /* Auto-Generated by RemoteSync Module */
 \$targetID = $localID;
-\$cipherID = $remCipher;
-\$keyID = $remKey;
-\$targetLocation = '$locName';
+\$secID = $remSecID;
+\$key = '$locKeySafe'; 
 
-\$ciphertext = GetValueString(\$cipherID);
-\$keysStr = GetValueString(\$keyID);
+if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
 
-\$keyring = @unserialize(\$keysStr);
-if (!\$keyring) die('Key Error');
+\$json = SEC_GetSecret(\$secID, \$key);
+\$creds = json_decode(\$json, true);
 
-\$secret = hex2bin(\$keyring['secret_key']);
-\$iv = hex2bin(\$keyring['iv']);
-\$tag = hex2bin(\$keyring['tag']);
-
-\$plain = openssl_decrypt(\$ciphertext, \$keyring['cipher'], \$secret, \$options=0, \$iv, \$tag);
-\$data = @unserialize(\$plain);
-if (!\$data) die('Decrypt Error');
-
-\$creds = null;
-foreach(\$data as \$entry) {
-    if (isset(\$entry['Location']) && \$entry['Location'] == \$targetLocation) {
-        \$creds = \$entry;
-        break;
-    }
-}
-
-if (!\$creds) die('Location not found');
+if (!\$creds || !isset(\$creds['URL'])) die('Credentials not found or Invalid JSON');
 
 \$url = 'https://'.\$creds['User'].':'.\$creds['PW'].'@'.\$creds['URL'].'/api/';
 
@@ -476,45 +427,36 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
     }
 
-    // --- Helpers ---
-
-    private function GetAccessData()
-    {
-        $cipherID = $this->ReadPropertyInteger('CipherVarID');
-        $keysID = $this->ReadPropertyInteger('KeyVarID');
-
-        if ($cipherID == 0 || $keysID == 0) return false;
-        if (!IPS_VariableExists($cipherID) || !IPS_VariableExists($keysID)) return false;
-
-        $ciphertext = GetValueString($cipherID);
-        $cipher_keys = GetValueString($keysID);
-        
-        $keyring_hex = @unserialize($cipher_keys);
-        if ($keyring_hex === false || !isset($keyring_hex['secret_key'])) return false;
-
-        $secret_key = hex2bin($keyring_hex['secret_key']);
-        $iv = hex2bin($keyring_hex['iv']);
-        $tag = hex2bin($keyring_hex['tag']);
-
-        $original_plaintext = openssl_decrypt($ciphertext, $keyring_hex['cipher'], $secret_key, $options=0, $iv, $tag);
-        
-        if ($original_plaintext === false) return false;
-
-        $data = @unserialize($original_plaintext);
-        return ($data === false) ? false : $data;
-    }
+    // --- Connection Helper (Delegated to Local Secrets Module) ---
 
     private function InitConnection()
     {
         if ($this->rpcClient !== null) return true;
 
-        $accessData = $this->GetAccessData();
-        if ($accessData === false) return false;
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $key = $this->ReadPropertyString('RemoteServerKey'); // String
 
-        $selectedKey = $this->ReadPropertyInteger('RemoteServerKey');
-        if (!isset($accessData[$selectedKey])) return false;
+        if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) return false;
 
-        $serverConfig = $accessData[$selectedKey];
+        // Call the Secrets Module
+        try {
+            if (!function_exists('SEC_GetSecret')) return false;
+            
+            // Get JSON String
+            $json = SEC_GetSecret($secID, $key);
+            // Decode
+            $serverConfig = json_decode($json, true);
+
+        } catch (Exception $e) {
+            $this->LogDebug("Failed to call SEC_GetSecret: " . $e->getMessage());
+            return false;
+        }
+
+        if (!$serverConfig || !isset($serverConfig['URL'])) {
+            $this->LogDebug("No valid credentials returned for Key $key");
+            return false;
+        }
+        
         $url = 'https://'.$serverConfig['User'].":".$serverConfig['PW']."@".$serverConfig['URL']."/api/";
         
         $this->rpcClient = new SimpleJSONRPC($url);

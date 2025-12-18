@@ -5,23 +5,27 @@
         { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
 
         { "type": "Label", "caption": "Authentication (Local -> Remote)" },
-        { "type": "SelectVariable", "name": "CipherVarID", "caption": "Ciphertext Variable ID" },
-        { "type": "SelectVariable", "name": "KeyVarID", "caption": "Key Variable ID" },
+        { "type": "Label", "caption": "Select your local Secrets Manager instance" },
+        { 
+            "type": "SelectInstance", 
+            "name": "LocalPasswordModuleID", 
+            "caption": "Local Secrets Module",
+            "validModules": [] 
+        },
         { 
             "type": "Select", 
             "name": "RemoteServerKey", 
-            "caption": "Target Remote Server",
+            "caption": "Target Remote Server (Key)",
             "options": [] 
         },
 
         { "type": "Label", "caption": "Reverse Control (Remote -> Local)" },
-        { "type": "Label", "caption": "Required for 'Remote Action' to work." },
-        { "type": "NumberSpinner", "name": "RemoteCipherID", "caption": "Remote ID: Encrypted Data" },
-        { "type": "NumberSpinner", "name": "RemoteKeyID", "caption": "Remote ID: Encrypted Keys" },
+        { "type": "Label", "caption": "Required for 'Remote Action'. The Remote System must have the Secrets Module installed." },
+        { "type": "NumberSpinner", "name": "RemotePasswordModuleID", "caption": "Remote Secrets Instance ID" },
         { 
             "type": "Select", 
-            "name": "LocalServerLocation", 
-            "caption": "Local Server Name (in Encrypted DB)",
+            "name": "LocalServerKey", 
+            "caption": "Local Server Key (used remotely)",
             "options": []
         },
 
