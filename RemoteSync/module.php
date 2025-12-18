@@ -45,7 +45,7 @@ class RemoteSync extends IPSModule
                             $serverOptions[] = ['caption' => $k, 'value' => $k];
                         }
                     }
-                } catch (Exception $e) { /* Fail silently in form */ }
+                } catch (Exception $e) { /* Fail silently */ }
             } else {
                 $serverOptions[0]['caption'] = "Error: SEC_GetKeys function missing";
             }
@@ -111,11 +111,8 @@ class RemoteSync extends IPSModule
     {
         parent::ApplyChanges();
 
-        // RESET Connection
         $this->rpcClient = null;
-        
-        // Log to Global Message Window
-        $this->LogDebug("ApplyChanges Triggered. DebugMode is ACTIVE.");
+        $this->LogDebug("ApplyChanges Triggered.");
 
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
@@ -130,24 +127,38 @@ class RemoteSync extends IPSModule
         $activeCount = 0;
         $continueInitialSync = true;
 
+        // --- DIAGNOSTIC LOGGING ---
         if ($localRoot == 0 || !IPS_ObjectExists($localRoot)) {
-            $this->LogDebug("Config Error: Local Root ID invalid.");
+            $this->LogDebug("Config Error: Local Root ID is invalid (ID: $localRoot).");
+            $this->SetStatus(IS_INACTIVE);
+            return;
+        }
+
+        // Detailed check for Secrets Module
+        if ($secID == 0) {
+            $this->LogDebug("Config Error: Local Secrets Module ID is 0. Please select an instance.");
+            $this->SetStatus(IS_INACTIVE);
+            return;
+        } elseif (!IPS_ObjectExists($secID)) {
+            $this->LogDebug("Config Error: The selected Secrets ID ($secID) does not exist.");
+            $this->SetStatus(IS_INACTIVE);
+            return;
+        } elseif (!IPS_InstanceExists($secID)) {
+            // It exists, but is it an instance?
+            $obj = IPS_GetObject($secID);
+            $type = $obj['ObjectType']; // 1=Instance
+            $this->LogDebug("Config Error: The selected ID ($secID) exists but is NOT an Instance. Object Type is: $type");
             $this->SetStatus(IS_INACTIVE);
             return;
         }
         
-        if ($secID == 0 || !IPS_InstanceExists($secID)) {
-            $this->LogDebug("Config Error: Secrets Module ID invalid.");
-            $this->SetStatus(IS_INACTIVE); 
-            return;
-        }
-
         if ($remoteKey === '') {
-            $this->LogDebug("Config Error: Remote Server Key empty.");
+            $this->LogDebug("Config Error: Remote Server Key is empty.");
             $this->SetStatus(IS_INACTIVE); 
             return;
         }
 
+        // --- PROCESSING ---
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
@@ -216,7 +227,6 @@ class RemoteSync extends IPSModule
 
         if ($remoteID > 0) {
             try {
-                // Log Value Push
                 $this->LogDebug("Pushing Value to Remote ID $remoteID: " . json_encode($value));
                 $this->rpcClient->SetValue($remoteID, $value);
                 $this->EnsureRemoteAction($localID, $remoteID);
@@ -313,7 +323,7 @@ class RemoteSync extends IPSModule
         $key = $this->ReadPropertyString('RemoteServerKey'); 
 
         if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) {
-             $this->LogDebug("InitConnection: Invalid Configuration.");
+             $this->LogDebug("InitConnection: Invalid Configuration (ID: $secID, Key: $key)");
              return false;
         }
 
@@ -509,8 +519,6 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
     private function LogDebug($msg)
     {
         if ($this->ReadPropertyBoolean('DebugMode')) {
-            // IPS_LogMessage writes to the Global Message Window (Meldungsfenster)
-            // 'RemoteSync' is the Sender Name
             IPS_LogMessage('RemoteSync', $msg);
         }
     }
