@@ -61,7 +61,6 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // --- Populate Sync List ---
         $rootID = $this->ReadPropertyInteger('LocalRootID');
         $savedListJSON = $this->ReadPropertyString('SyncList');
         $savedList = json_decode($savedListJSON, true);
@@ -149,7 +148,6 @@ class RemoteSync extends IPSModule
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
                 
-                // DELETION
                 if (empty($item['Active']) && !empty($item['Delete'])) {
                     if (IPS_ObjectExists($objID)) {
                         $this->LogDebug("Processing Deletion: $objID");
@@ -163,7 +161,6 @@ class RemoteSync extends IPSModule
                     continue; 
                 }
 
-                // SYNC
                 if (empty($item['Active'])) continue;
                 if (!IPS_ObjectExists($objID)) continue;
 
@@ -199,8 +196,6 @@ class RemoteSync extends IPSModule
             $this->SyncVariable($SenderID, $Data[0]);
         }
     }
-
-    // --- Core Sync Logic ---
 
     private function SyncVariable(int $localID, $value): bool
     {
@@ -313,6 +308,10 @@ class RemoteSync extends IPSModule
              return false;
         }
 
+        // --- NEW LOGGING HERE ---
+        $this->LogDebug("InitConnection: Requesting secret for Key: [" . $key . "]");
+        // ------------------------
+
         try {
             if (!function_exists('SEC_GetSecret')) {
                 $this->LogDebug("InitConnection: SEC_GetSecret missing.");
@@ -320,19 +319,15 @@ class RemoteSync extends IPSModule
             }
             
             $json = SEC_GetSecret($secID, $key);
-            
-            // --- DEBUG OUTPUT FOR RAW JSON ---
             $this->LogDebug("RAW JSON from SEC: " . $json);
-            // ---------------------------------
 
             $config = json_decode($json, true);
             
-            if ($config === null) {
-                $this->LogDebug("InitConnection: JSON Decode Failed. Raw: " . $json);
+            if (!is_array($config)) {
+                $this->LogDebug("InitConnection: JSON Decode returned non-array (Type: " . gettype($config) . ").");
                 return false;
             }
 
-            // Case-Insensitive Fallback
             $url = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? null;
             $user = $config['User'] ?? $config['user'] ?? $config['Username'] ?? null;
             $pw = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? null;
@@ -474,15 +469,9 @@ if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
 \$json = SEC_GetSecret(\$secID, \$key);
 \$creds = json_decode(\$json, true);
 
-if (!\$creds) die('Credentials not found');
+if (!\$creds || !isset(\$creds['URL'])) die('Credentials not found or Invalid JSON');
 
-\$url = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
-\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
-\$pw = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
-
-if (!\$url) die('Invalid config structure');
-
-\$connUrl = 'https://'.\$user.':'.\$pw.'@'.\$url.'/api/';
+\$url = 'https://'.\$creds['User'].':'.\$creds['PW'].'@'.\$creds['URL'].'/api/';
 
 class MiniRPC {
     private \$url;
@@ -495,7 +484,7 @@ class MiniRPC {
     }
 }
 
-\$rpc = new MiniRPC(\$connUrl);
+\$rpc = new MiniRPC(\$url);
 \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
 SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
