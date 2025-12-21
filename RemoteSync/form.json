@@ -38,11 +38,19 @@
         { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
 
         { "type": "Label", "caption": "Selection" },
-        { "type": "Label", "caption": "Batch Tools (Click to toggle all items below)" },
+        { "type": "Label", "caption": "Batch Tools (Set entire column)" },
         { "type": "RowLayout", "items": [
-            { "type": "CheckBox", "name": "BatchSync", "caption": "Select All Sync", "onChange": "RS_ToggleAll($id, 'Active', $BatchSync);" },
-            { "type": "CheckBox", "name": "BatchAction", "caption": "Select All Action", "onChange": "RS_ToggleAll($id, 'Action', $BatchAction);" },
-            { "type": "CheckBox", "name": "BatchDelete", "caption": "Select All Delete", "onChange": "RS_ToggleAll($id, 'Delete', $BatchDelete);" }
+            { "type": "Label", "caption": "Sync:", "width": "40px" },
+            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Active', true);", "width": "50px" },
+            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Active', false);", "width": "50px" },
+            
+            { "type": "Label", "caption": " | Action:", "width": "60px" },
+            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Action', true);", "width": "50px" },
+            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Action', false);", "width": "50px" },
+
+            { "type": "Label", "caption": " | Delete:", "width": "60px" },
+            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Delete', true);", "width": "50px" },
+            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Delete', false);", "width": "50px" }
         ]},
         {
             "type": "List",
