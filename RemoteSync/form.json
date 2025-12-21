@@ -38,6 +38,12 @@
         { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
 
         { "type": "Label", "caption": "Selection" },
+        { "type": "Label", "caption": "Batch Tools (Click to toggle all items below)" },
+        { "type": "RowLayout", "items": [
+            { "type": "CheckBox", "name": "BatchSync", "caption": "Select All Sync", "onChange": "RS_ToggleAll($id, 'Active', $BatchSync);" },
+            { "type": "CheckBox", "name": "BatchAction", "caption": "Select All Action", "onChange": "RS_ToggleAll($id, 'Action', $BatchAction);" },
+            { "type": "CheckBox", "name": "BatchDelete", "caption": "Select All Delete", "onChange": "RS_ToggleAll($id, 'Delete', $BatchDelete);" }
+        ]},
         {
             "type": "List",
             "name": "SyncList",
@@ -53,12 +59,6 @@
                 { "name": "Delete", "caption": "Del Remote", "width": "80px", "edit": { "type": "CheckBox" } }
             ],
             "values": []
-        },
-        { "type": "Label", "caption": "Batch Tools (Click to toggle all in list)" },
-        { "type": "RowLayout", "items": [
-            { "type": "CheckBox", "name": "BatchSync", "caption": "Select All Sync", "onChange": "RS_ToggleAll($id, 'Active', $BatchSync);" },
-            { "type": "CheckBox", "name": "BatchAction", "caption": "Select All Action", "onChange": "RS_ToggleAll($id, 'Action', $BatchAction);" },
-            { "type": "CheckBox", "name": "BatchDelete", "caption": "Select All Delete", "onChange": "RS_ToggleAll($id, 'Delete', $BatchDelete);" }
-        ]}
+        }
     ]
 }
