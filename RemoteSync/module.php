@@ -375,31 +375,63 @@ class RemoteSync extends IPSModule
     private function DeleteRemoteObject(int $remoteID)
     {
         try {
-            $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
+            // 1. Get Object Details (Type and Children status)
+            $obj = @$this->rpcClient->IPS_GetObject($remoteID);
             
-            // Check if we got children or false
-            if (is_array($children)) {
-                foreach ($children as $childID) {
-                    $this->LogDebug("Deleting Child Object ID: $childID");
-                    $this->rpcClient->IPS_DeleteObject($childID);
-                }
-            } else {
-                // If it returned false, we should probably check why, but logging it is good
-                $this->LogDebug("IPS_GetChildrenIDs returned false or error for ID $remoteID");
+            if (!$obj) {
+                $this->LogDebug("Remote Object $remoteID not found. Skipping delete.");
+                return;
             }
 
-            $this->LogDebug("Executing IPS_DeleteObject on ID: $remoteID");
-            $this->rpcClient->IPS_DeleteObject($remoteID);
-            
+            // 2. Recursively delete children first
+            // IP-Symcon requires children to be deleted before the parent
+            if ($obj['HasChildren']) {
+                $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
+                if (is_array($children)) {
+                    foreach ($children as $childID) {
+                        $this->DeleteRemoteObject($childID); // Recursive Call
+                    }
+                }
+            }
+
+            // 3. Delete the object using the specific function for its type
+            $type = $obj['ObjectType'];
+            $this->LogDebug("Deleting Remote ID $remoteID (Type: $type)...");
+
+            switch ($type) {
+                case 0: // Category
+                    $this->rpcClient->IPS_DeleteCategory($remoteID);
+                    break;
+                case 1: // Instance
+                    $this->rpcClient->IPS_DeleteInstance($remoteID);
+                    break;
+                case 2: // Variable
+                    $this->rpcClient->IPS_DeleteVariable($remoteID);
+                    break;
+                case 3: // Script
+                    $this->rpcClient->IPS_DeleteScript($remoteID);
+                    break;
+                case 4: // Event
+                    $this->rpcClient->IPS_DeleteEvent($remoteID);
+                    break;
+                case 5: // Media
+                    $this->rpcClient->IPS_DeleteMedia($remoteID, true); // true = delete file
+                    break;
+                case 6: // Link
+                    $this->rpcClient->IPS_DeleteLink($remoteID);
+                    break;
+                default:
+                    $this->LogDebug("Unknown Object Type $type for ID $remoteID. Cannot delete.");
+                    return;
+            }
+
+            // 4. Remove from local cache
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }
-            
-            $this->LogDebug("Deletion Successful.");
 
-        } catch (Exception $e) { 
-            // FIX: Caught error and log it
-            $this->LogDebug("Delete Remote Object Failed: " . $e->getMessage());
+        } catch (Exception $e) {
+            $this->LogDebug("Failed to delete Remote ID $remoteID: " . $e->getMessage());
         }
     }
 
