@@ -9,7 +9,8 @@
         { 
             "type": "SelectInstance", 
             "name": "LocalPasswordModuleID", 
-            "caption": "Local Secrets Module"
+            "caption": "Local Secrets Module",
+            "validModules": [] 
         },
         { 
             "type": "Select", 
@@ -25,7 +26,7 @@
             "type": "Select", 
             "name": "LocalServerKey", 
             "caption": "Local Server Key (used remotely)",
-            "options": []
+            "options": [] 
         },
 
         { "type": "Label", "caption": "Mirror Anchors" },
@@ -52,6 +53,12 @@
                 { "name": "Delete", "caption": "Del Remote", "width": "80px", "edit": { "type": "CheckBox" } }
             ],
             "values": []
-        }
+        },
+        { "type": "Label", "caption": "Batch Tools (Click to toggle all in list)" },
+        { "type": "RowLayout", "items": [
+            { "type": "CheckBox", "name": "BatchSync", "caption": "Select All Sync", "onChange": "RS_ToggleAll($id, 'Active', $BatchSync);" },
+            { "type": "CheckBox", "name": "BatchAction", "caption": "Select All Action", "onChange": "RS_ToggleAll($id, 'Action', $BatchAction);" },
+            { "type": "CheckBox", "name": "BatchDelete", "caption": "Select All Delete", "onChange": "RS_ToggleAll($id, 'Delete', $BatchDelete);" }
+        ]}
     ]
 }
