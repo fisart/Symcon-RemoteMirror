@@ -107,58 +107,26 @@ class RemoteSync extends IPSModule
      */
     public function ToggleAll(string $Column, bool $State)
     {
-        // Load IDs from Cache
-        $cachedIDs = json_decode($this->ReadAttributeString('_SyncListCache'), true);
-        if (!is_array($cachedIDs)) $cachedIDs = [];
-
-        // Load Saved Config to preserve other columns
-        $savedList = json_decode($this->ReadPropertyString('SyncList'), true);
-        $activeMap = []; $actionMap = []; $deleteMap = [];
-        if (is_array($savedList)) {
-            foreach ($savedList as $item) {
-                if (isset($item['ObjectID'])) {
-                    $activeMap[$item['ObjectID']] = $item['Active'] ?? false;
-                    $actionMap[$item['ObjectID']] = $item['Action'] ?? false;
-                    $deleteMap[$item['ObjectID']] = $item['Delete'] ?? false;
-                }
-            }
-        }
-
-        $newValues = [];
-        foreach ($cachedIDs as $varID) {
-            $isActive = $activeMap[$varID] ?? false;
-            $isAction = $actionMap[$varID] ?? false;
-            $isDelete = $deleteMap[$varID] ?? false;
-
-            // Apply Toggle
-            if ($Column === 'Active') $isActive = $State;
-            if ($Column === 'Action') $isAction = $State;
-            if ($Column === 'Delete') $isDelete = $State;
-
-            $newValues[] = [
-                'ObjectID' => $varID,
-                'Name'     => IPS_GetName($varID),
-                'Active'   => $isActive,
-                'Action'   => $isAction,
-                'Delete'   => $isDelete
-            ];
-        }
+        // Rebuild list with override
+        $newValues = $this->BuildSyncListAndCache($Column, $State);
         
-        // Update UI
+        // Push update to UI
         $this->UpdateFormField('SyncList', 'values', json_encode($newValues));
     }
 
     /**
-     * Helper: Scans tree (Optimized), Caches result, Builds List for Form
+     * Helper to build the list array.
+     * Optional parameters allow forcing a column to a specific state.
      */
-    private function BuildSyncListAndCache()
+    private function BuildSyncListAndCache($OverrideColumn = null, $OverrideState = null)
     {
         try {
             $rootID = @$this->ReadPropertyInteger('LocalRootID');
             $rawList = @$this->ReadPropertyString('SyncList');
             $savedListJSON = is_string($rawList) ? $rawList : '[]';
         } catch (Exception $e) {
-            $rootID = 0; $savedListJSON = '[]';
+            $rootID = 0;
+            $savedListJSON = '[]';
         }
 
         $savedList = json_decode($savedListJSON, true);
@@ -176,34 +144,49 @@ class RemoteSync extends IPSModule
         }
 
         $values = [];
-        $scannedIDs = [];
-
-        if ($rootID > 0 && IPS_ObjectExists($rootID)) {
-            // OPTIMIZED SCAN
-            $this->GetRecursiveVariables($rootID, $scannedIDs);
-            
-            // Save to Cache for ToggleAll
-            $this->WriteAttributeString('_SyncListCache', json_encode($scannedIDs));
-
-            foreach ($scannedIDs as $varID) {
-                $values[] = [
-                    'ObjectID' => $varID,
-                    'Name'     => IPS_GetName($varID),
-                    'Active'   => $activeMap[$varID] ?? false,
-                    'Action'   => $actionMap[$varID] ?? false,
-                    'Delete'   => $deleteMap[$varID] ?? false
-                ];
-            }
+        
+        // If Override is used (ToggleAll), we rely on Cache to avoid re-scan
+        if ($OverrideColumn !== null) {
+             $cachedIDs = json_decode($this->ReadAttributeString('_SyncListCache'), true);
+             if (!is_array($cachedIDs)) $cachedIDs = []; // Fallback to empty if cache missing
+             $scannedIDs = $cachedIDs;
         } else {
-            // Clear cache if root invalid
-            $this->WriteAttributeString('_SyncListCache', '[]');
+             // Normal Load: Full Scan
+             $scannedIDs = [];
+             if ($rootID > 0 && IPS_ObjectExists($rootID)) {
+                 $this->GetRecursiveVariables($rootID, $scannedIDs);
+                 // Update Cache
+                 $this->WriteAttributeString('_SyncListCache', json_encode($scannedIDs));
+             }
         }
+
+        foreach ($scannedIDs as $varID) {
+            // Check if object still exists (if reading from cache)
+            if (!IPS_ObjectExists($varID)) continue;
+
+            $isActive = $activeMap[$varID] ?? false;
+            $isAction = $actionMap[$varID] ?? false;
+            $isDelete = $deleteMap[$varID] ?? false;
+
+            // Apply Override
+            if ($OverrideColumn === 'Active') $isActive = $OverrideState;
+            if ($OverrideColumn === 'Action') $isAction = $OverrideState;
+            if ($OverrideColumn === 'Delete') $isDelete = $OverrideState;
+
+            $values[] = [
+                'ObjectID' => $varID,
+                'Name'     => IPS_GetName($varID),
+                'Active'   => $isActive,
+                'Action'   => $isAction,
+                'Delete'   => $isDelete
+            ];
+        }
+        
         return $values;
     }
 
     /**
      * OPTIMIZED RECURSION (Pass by Reference)
-     * Replaces the slow array_merge implementation.
      */
     private function GetRecursiveVariables($parentID, &$result)
     {
@@ -485,13 +468,16 @@ class RemoteSync extends IPSModule
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }
-        } catch (Exception $e) { }
+        } catch (Exception $e) { 
+            $this->LogDebug("Delete process failed: " . $e->getMessage());
+        }
     }
 
     private function SafeDeleteRemote(int $id)
     {
         try {
             $this->rpcClient->IPS_DeleteObject($id);
+            $this->LogDebug("Success: IPS_DeleteObject($id)");
         } catch (Exception $e) {
             $msg = $e->getMessage();
             if (stripos($msg, 'found') !== false || stripos($msg, 'valid') !== false) {
@@ -510,7 +496,12 @@ class RemoteSync extends IPSModule
                             break;
                         case 6: $this->rpcClient->IPS_DeleteLink($id); break;
                     }
-                } catch (Exception $e2) { }
+                    $this->LogDebug("Success: Legacy Delete on ID $id");
+                } catch (Exception $e2) {
+                    $this->LogDebug("Fallback Delete Failed: " . $e2->getMessage());
+                }
+            } else {
+                $this->LogDebug("Delete Error for ID $id: " . $msg);
             }
         }
     }
@@ -559,10 +550,11 @@ class RemoteSync extends IPSModule
 
     private function EnsureRemoteAction(int $localID, int $remoteID)
     {
-        // Use CACHED Config
-        $remSecID = $this->config['RemotePasswordModuleID'] ?? 0;
-        $locKey = $this->config['LocalServerKey'] ?? ''; 
-        $syncList = $this->config['SyncList'] ?? [];
+        try {
+            $remSecID = $this->config['RemotePasswordModuleID'] ?? 0;
+            $locKey = $this->config['LocalServerKey'] ?? ''; 
+            $syncList = $this->config['SyncList'] ?? [];
+        } catch (Exception $e) { return; }
 
         $actionEnabled = false;
         
