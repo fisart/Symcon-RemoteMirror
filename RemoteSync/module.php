@@ -30,11 +30,11 @@ class RemoteSync extends IPSModule
     {
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
         
-        // Use try-catch block for property reading during form load to prevent UI crashes
+        // Defensive property reading
         try {
-            $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-            $currentRemoteKey = $this->ReadPropertyString('RemoteServerKey');
-            $currentLocalKey = $this->ReadPropertyString('LocalServerKey');
+            $secID = @$this->ReadPropertyInteger('LocalPasswordModuleID');
+            $currentRemoteKey = @$this->ReadPropertyString('RemoteServerKey');
+            $currentLocalKey = @$this->ReadPropertyString('LocalServerKey');
         } catch (Exception $e) {
             $secID = 0;
             $currentRemoteKey = '';
@@ -87,10 +87,10 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // Safe property reading for list
         try {
-            $rootID = $this->ReadPropertyInteger('LocalRootID');
-            $savedListJSON = $this->ReadPropertyString('SyncList');
+            $rootID = @$this->ReadPropertyInteger('LocalRootID');
+            $rawList = @$this->ReadPropertyString('SyncList');
+            $savedListJSON = is_string($rawList) ? $rawList : '[]';
         } catch (Exception $e) {
             $rootID = 0;
             $savedListJSON = '[]';
@@ -151,12 +151,11 @@ class RemoteSync extends IPSModule
             $this->UnregisterMessage($senderID, VM_UPDATE);
         }
 
-        // Defensive Property Reading
         try {
-            $syncListStr = $this->ReadPropertyString('SyncList');
-            if (!is_string($syncListStr)) throw new Exception("SyncList invalid");
+            $rawList = @$this->ReadPropertyString('SyncList');
+            if (!is_string($rawList)) throw new Exception("Interface unavailable");
             
-            $syncList = json_decode($syncListStr, true);
+            $syncList = json_decode($rawList, true);
             $localRoot = $this->ReadPropertyInteger('LocalRootID');
             $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
             $remoteKey = $this->ReadPropertyString('RemoteServerKey');
@@ -250,7 +249,7 @@ class RemoteSync extends IPSModule
 
         if ($remoteID > 0) {
             try {
-                $this->LogDebug("Pushing Value to Remote ID $remoteID: " . json_encode($value));
+                // $this->LogDebug("Pushing Value to Remote ID $remoteID: " . json_encode($value));
                 $this->rpcClient->SetValue($remoteID, $value);
                 $this->EnsureRemoteAction($localID, $remoteID);
                 return true;
@@ -260,7 +259,7 @@ class RemoteSync extends IPSModule
                 return false;
             }
         } else {
-            $this->LogDebug("SyncVariable: Could not resolve Remote ID for Local ID $localID");
+            // $this->LogDebug("SyncVariable: Could not resolve Remote ID for Local ID $localID");
         }
         return false;
     }
@@ -269,11 +268,10 @@ class RemoteSync extends IPSModule
     {
         if (isset($this->idMappingCache[$localID])) return $this->idMappingCache[$localID];
 
-        // Safe property access
         try {
-            $localRoot = $this->ReadPropertyInteger('LocalRootID');
-            $remoteRoot = $this->ReadPropertyInteger('RemoteRootID');
-            $autoCreate = $this->ReadPropertyBoolean('AutoCreate');
+            $localRoot = @$this->ReadPropertyInteger('LocalRootID');
+            $remoteRoot = @$this->ReadPropertyInteger('RemoteRootID');
+            $autoCreate = @$this->ReadPropertyBoolean('AutoCreate');
         } catch (Exception $e) { return 0; }
 
         $pathStack = [];
@@ -347,11 +345,9 @@ class RemoteSync extends IPSModule
         if ($this->rpcClient !== null) return true;
 
         try {
-            $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-            $key = $this->ReadPropertyString('RemoteServerKey'); 
-        } catch (Exception $e) {
-            return false;
-        }
+            $secID = @$this->ReadPropertyInteger('LocalPasswordModuleID');
+            $key = @$this->ReadPropertyString('RemoteServerKey'); 
+        } catch (Exception $e) { return false; }
 
         if ($secID == 0 || $key === '' || !IPS_InstanceExists($secID)) {
              $this->LogDebug("InitConnection: Invalid Config.");
@@ -406,10 +402,13 @@ class RemoteSync extends IPSModule
                 }
             }
             $this->SafeDeleteRemote($remoteID);
+            
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }
-        } catch (Exception $e) { }
+        } catch (Exception $e) {
+            $this->LogDebug("Delete process failed: " . $e->getMessage());
+        }
     }
 
     private function SafeDeleteRemote(int $id)
@@ -489,12 +488,13 @@ class RemoteSync extends IPSModule
 
     private function EnsureRemoteAction(int $localID, int $remoteID)
     {
-        // FIX: Wrapped in Try/Catch and separated decoding
+        // FIX: Defensive coding to prevent crash if instance is zombie
         try {
-            $remSecID = $this->ReadPropertyInteger('RemotePasswordModuleID');
-            $locKey = $this->ReadPropertyString('LocalServerKey'); 
+            $remSecID = @$this->ReadPropertyInteger('RemotePasswordModuleID');
+            $locKey = @$this->ReadPropertyString('LocalServerKey'); 
+            $rawList = @$this->ReadPropertyString('SyncList');
             
-            $rawList = $this->ReadPropertyString('SyncList');
+            // Critical check: if rawList is false, abort
             if (!is_string($rawList)) return;
             $syncList = json_decode($rawList, true);
         } catch (Exception $e) { return; }
@@ -515,19 +515,19 @@ class RemoteSync extends IPSModule
             return;
         }
 
-        try {
-            $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
-            if ($children === false) return;
+        $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
+        if ($children === false) return;
 
-            $scriptID = 0;
-            foreach ($children as $child) {
-                $obj = @$this->rpcClient->IPS_GetObject($child);
-                if ($obj && $obj['ObjectType'] == 3) {
-                    $scriptID = $child;
-                    break;
-                }
+        $scriptID = 0;
+        foreach ($children as $child) {
+            $obj = @$this->rpcClient->IPS_GetObject($child);
+            if ($obj && $obj['ObjectType'] == 3) {
+                $scriptID = $child;
+                break;
             }
+        }
 
+        try {
             if ($scriptID == 0) {
                 $scriptID = $this->rpcClient->IPS_CreateScript(0); 
                 $this->rpcClient->IPS_SetParent($scriptID, $remoteID);
@@ -619,7 +619,6 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 
     private function LogDebug($msg)
     {
-        // Suppress warnings in LogDebug to prevent cascading errors if instance is broken
         try {
             if (@$this->ReadPropertyBoolean('DebugMode')) {
                 IPS_LogMessage('RemoteSync', $msg);
