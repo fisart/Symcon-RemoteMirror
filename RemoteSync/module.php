@@ -46,7 +46,7 @@ class RemoteSync extends IPSModule
                             $serverOptions[] = ['caption' => $val, 'value' => $val];
                         }
                     }
-                } catch (Exception $e) { /* Fail silently in form */ }
+                } catch (Exception $e) { /* Fail silently */ }
             } else {
                 $serverOptions[0]['caption'] = "Error: SEC_GetKeys function missing";
             }
@@ -167,19 +167,26 @@ class RemoteSync extends IPSModule
             foreach ($syncList as $item) {
                 $objID = $item['ObjectID'];
                 
+                // DELETION
                 if (empty($item['Active']) && !empty($item['Delete'])) {
                     if (IPS_ObjectExists($objID)) {
                         $this->LogDebug("Processing Deletion: $objID");
                         if ($this->InitConnection()) {
                             $remoteID = $this->ResolveRemoteID($objID, false);
+                            
+                            // NEW: Explicit logging for deletion path
                             if ($remoteID > 0) {
+                                $this->LogDebug("Remote ID found: $remoteID. Attempting delete...");
                                 $this->DeleteRemoteObject($remoteID);
+                            } else {
+                                $this->LogDebug("Deletion Aborted: Remote object could not be found (Check names?).");
                             }
                         }
                     }
                     continue; 
                 }
 
+                // SYNC
                 if (empty($item['Active'])) continue;
                 if (!IPS_ObjectExists($objID)) continue;
 
@@ -327,7 +334,7 @@ class RemoteSync extends IPSModule
              return false;
         }
 
-        $this->LogDebug("InitConnection: Requesting secret for Key: [" . $key . "]");
+        // $this->LogDebug("InitConnection: Requesting secret for Key: [" . $key . "]");
 
         try {
             if (!function_exists('SEC_GetSecret')) {
@@ -336,9 +343,6 @@ class RemoteSync extends IPSModule
             }
             
             $json = SEC_GetSecret($secID, $key);
-            // DEBUG: Uncomment to see raw json if needed
-            // $this->LogDebug("RAW JSON from SEC: " . $json);
-
             $config = json_decode($json, true);
             
             if (!is_array($config)) {
@@ -351,11 +355,10 @@ class RemoteSync extends IPSModule
             $pw = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? null;
 
             if (!$url || !$user || !$pw) {
-                $this->LogDebug("InitConnection: Config Missing Fields. Keys found: " . implode(", ", array_keys($config)));
+                $this->LogDebug("InitConnection: Config Missing Fields.");
                 return false;
             }
             
-            // FIX: Encoded credentials for special chars (like @)
             $userEnc = urlencode($user);
             $pwEnc = urlencode($pw);
             
@@ -373,16 +376,31 @@ class RemoteSync extends IPSModule
     {
         try {
             $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteID);
+            
+            // Check if we got children or false
             if (is_array($children)) {
                 foreach ($children as $childID) {
+                    $this->LogDebug("Deleting Child Object ID: $childID");
                     $this->rpcClient->IPS_DeleteObject($childID);
                 }
+            } else {
+                // If it returned false, we should probably check why, but logging it is good
+                $this->LogDebug("IPS_GetChildrenIDs returned false or error for ID $remoteID");
             }
+
+            $this->LogDebug("Executing IPS_DeleteObject on ID: $remoteID");
             $this->rpcClient->IPS_DeleteObject($remoteID);
+            
             if (($key = array_search($remoteID, $this->idMappingCache)) !== false) {
                 unset($this->idMappingCache[$key]);
             }
-        } catch (Exception $e) { }
+            
+            $this->LogDebug("Deletion Successful.");
+
+        } catch (Exception $e) { 
+            // FIX: Caught error and log it
+            $this->LogDebug("Delete Remote Object Failed: " . $e->getMessage());
+        }
     }
 
     private function EnsureRemoteProfile(int $localID, int $remoteID)
@@ -461,25 +479,19 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // START OF UPDATE STRATEGY
-        try {
-            if ($scriptID == 0) {
+        if ($scriptID == 0) {
+            try {
                 $scriptID = $this->rpcClient->IPS_CreateScript(0); 
                 $this->rpcClient->IPS_SetParent($scriptID, $remoteID);
                 $this->rpcClient->IPS_SetName($scriptID, "ActionScript");
                 $this->rpcClient->IPS_SetHidden($scriptID, true); 
-            }
-            
-            // UPDATE CONTENT ALWAYS (Force Update Strategy)
-            $code = $this->GenerateActionScriptCode($localID, $remSecID, $locKey);
-            $this->rpcClient->IPS_SetScriptContent($scriptID, $code);
+                
+                $code = $this->GenerateActionScriptCode($localID, $remSecID, $locKey);
+                $this->rpcClient->IPS_SetScriptContent($scriptID, $code);
 
-            // Re-link variable action (just in case)
-            $this->rpcClient->IPS_SetVariableCustomAction($remoteID, $scriptID);
-        } catch (Exception $e) { 
-            // Log if needed
+                $this->rpcClient->IPS_SetVariableCustomAction($remoteID, $scriptID);
+            } catch (Exception $e) { }
         }
-        // END OF UPDATE STRATEGY
     }
 
     private function GenerateActionScriptCode($localID, $remSecID, $locKey)
@@ -499,14 +511,12 @@ if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
 
 if (!\$creds || !isset(\$creds['URL'])) die('Credentials not found or Invalid JSON');
 
-// Extract
 \$url = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
 \$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
 \$pw = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
 
 if (!\$url) die('Invalid config structure');
 
-// FIX: Encode Credentials for Special Chars
 \$userEnc = urlencode(\$user);
 \$pwEnc = urlencode(\$pw);
 
@@ -529,7 +539,6 @@ class MiniRPC {
 
 \$rpc = new MiniRPC(\$connUrl);
 
-// Try-Fallback Logic
 try {
     \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
 } catch (Exception \$e) {
@@ -540,7 +549,6 @@ try {
     }
 }
 
-// Visual Update
 SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
     }
@@ -551,7 +559,6 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
         $children = IPS_GetChildrenIDs($parentID);
         foreach ($children as $childID) {
             $obj = IPS_GetObject($childID);
-            // Allow variables nested in any object type (HasChildren)
             if ($obj['ObjectType'] == 2) { 
                 $result[] = $childID;
             }
