@@ -374,8 +374,8 @@ class RemoteSync extends IPSModule
 
     private function DeleteRemoteObject(int $remoteID)
     {
-        // 1. Get Object Info (Type and Children)
         try {
+            // 1. Get Object Details (Type and Children status)
             $obj = @$this->rpcClient->IPS_GetObject($remoteID);
             
             if (!$obj) {
@@ -395,7 +395,6 @@ class RemoteSync extends IPSModule
             }
 
             // 3. Delete the object using the specific function for its type
-            // This avoids "Method not found" errors from generic IPS_DeleteObject
             $type = $obj['ObjectType'];
             
             switch ($type) {
@@ -409,18 +408,15 @@ class RemoteSync extends IPSModule
                     $this->rpcClient->IPS_DeleteVariable($remoteID);
                     break;
                 case 3: // Script
-                    $this->rpcClient->IPS_DeleteScript($remoteID);
+                    // Fix: Added 'true' to delete the file permanently
+                    $this->rpcClient->IPS_DeleteScript($remoteID, true);
                     break;
                 case 4: // Event
                     $this->rpcClient->IPS_DeleteEvent($remoteID);
                     break;
                 case 5: // Media
-                    // Try with 2 arguments (ID, DeleteFile), fallback to 1 if mismatch occurs
-                    try {
-                        $this->rpcClient->IPS_DeleteMedia($remoteID, true);
-                    } catch (Exception $mediaEx) {
-                        $this->rpcClient->IPS_DeleteMedia($remoteID);
-                    }
+                    // Media also usually requires the second parameter
+                    $this->rpcClient->IPS_DeleteMedia($remoteID, true);
                     break;
                 case 6: // Link
                     $this->rpcClient->IPS_DeleteLink($remoteID);
