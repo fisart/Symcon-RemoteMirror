@@ -13,8 +13,6 @@ class RemoteSync extends IPSModule
     public function Create()
     {
         parent::Create();
-
-        // Initialize properties
         $this->rpcClient = null;
         $this->config = [];
         $this->buffer = [];
@@ -32,17 +30,13 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('RemoteRootID', 0);
         $this->RegisterPropertyString('SyncList', '[]');
         
-        // Internal Attributes
         $this->RegisterAttributeString('_SyncListCache', '[]');
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         
-        // Timers
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
-
-    // --- FORM & UI ---
 
     public function GetConfigurationForm()
     {
@@ -97,8 +91,6 @@ class RemoteSync extends IPSModule
         $newValues = $this->BuildSyncListAndCache($Column, $State);
         $this->UpdateFormField('SyncList', 'values', json_encode($newValues));
     }
-
-    // --- INSTALLATION (PUBLIC) ---
 
     public function InstallRemoteScripts()
     {
@@ -173,8 +165,6 @@ class RemoteSync extends IPSModule
         return $id;
     }
 
-    // --- RUNTIME & BUFFERING ---
-
     public function ApplyChanges()
     {
         $this->isInitializing = true;
@@ -182,8 +172,7 @@ class RemoteSync extends IPSModule
         
         $this->rpcClient = null;
         $this->buffer = [];
-        
-        // RESET FLAGS (Fixes stuck 'Sending' state)
+        // Force Reset Sending Flag
         $this->isSending = false;
         
         $this->SetTimerInterval('BufferTimer', 0);
@@ -235,7 +224,6 @@ class RemoteSync extends IPSModule
             if (!$this->LoadConfig()) return;
         }
 
-        // Add ALL active variables to buffer for initial sync
         foreach ($this->config['SyncList'] as $item) {
             $this->AddToBuffer($item['ObjectID']);
         }
@@ -285,54 +273,52 @@ class RemoteSync extends IPSModule
         }
 
         $this->buffer[$localID] = $payload;
-        $this->LogDebug("Buffer: Added ID $localID. Queued.");
         $this->SetTimerInterval('BufferTimer', 200); 
     }
 
     public function FlushBuffer()
     {
-        // Debugging the flow
-        $bufferCount = count($this->buffer);
+        // 1. Concurrency Check
         if ($this->isSending) {
-            $this->LogDebug("FlushBuffer: Skipped (Busy sending previous batch). Buffered items: $bufferCount");
+            // $this->LogDebug("FlushBuffer: Busy sending...");
             return;
         }
         
         $this->SetTimerInterval('BufferTimer', 0);
         
-        if ($bufferCount == 0) {
-             // $this->LogDebug("FlushBuffer: Skipped (Empty).");
-             return;
-        }
+        if (empty($this->buffer)) return;
 
         $this->isSending = true;
 
         try {
             $receiverID = $this->ReadAttributeInteger('_RemoteReceiverID');
             if ($receiverID == 0) {
-                $this->LogDebug("Error: Remote Scripts not installed. Batch discarded.");
+                $this->LogDebug("Error: Remote Scripts not installed.");
                 return;
             }
 
             if (!$this->InitConnection()) throw new Exception("Connection Init failed");
 
+            // Capture batch
             $batch = array_values($this->buffer);
-            $this->buffer = []; // Clear immediately
+            $this->buffer = []; 
 
-            $this->LogDebug("FlushBuffer: Sending batch of " . count($batch) . " items...");
+            $this->LogDebug("Sending batch of " . count($batch) . " items...");
             $json = json_encode($batch);
             
+            // Execute Remote Script
             $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
             $this->LogDebug("Remote Receiver Result: " . $result);
             
         } catch (Exception $e) {
-            $this->LogDebug("FlushBuffer Failed: " . $e->getMessage());
+            $this->LogDebug("Batch Send Failed: " . $e->getMessage());
         } finally {
+            // 2. ALWAYS Reset Flag
             $this->isSending = false;
-            // Retry if new data came in while waiting
+            
+            // 3. Reschedule if new data arrived (Don't call recursively)
             if (!empty($this->buffer)) {
-                $this->LogDebug("FlushBuffer: New data arrived during send. Retriggering...");
-                $this->FlushBuffer(); 
+                $this->SetTimerInterval('BufferTimer', 100); // 100ms fast retry
             }
         }
     }
@@ -369,7 +355,6 @@ foreach (\$batch as \$item) {
         // 1. FIND
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
         
-        // Migration Fallback
         if (!\$remoteID) {
             \$currentParent = \$rootID;
             \$foundPath = true;
