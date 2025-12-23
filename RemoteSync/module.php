@@ -202,8 +202,8 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        // Diagnostic Log
-        IPS_LogMessage("RemoteSync_DIAG", "Sink: Triggered by ID $SenderID");
+        // Changed forced log to switchable Debug Log
+        $this->LogDebug("Sink: Triggered by ID $SenderID");
         $this->AddToBuffer($SenderID);
     }
 
@@ -226,7 +226,8 @@ class RemoteSync extends IPSModule
     {
         if (empty($this->config)) {
             if (!$this->LoadConfig()) {
-                IPS_LogMessage("RemoteSync_DIAG", "Buffer Error: LoadConfig() failed.");
+                // Changed forced log to switchable Debug Log
+                $this->LogDebug("Buffer Error: LoadConfig() failed.");
                 return;
             }
         }
@@ -240,7 +241,8 @@ class RemoteSync extends IPSModule
         }
 
         if (!$itemConfig) {
-            IPS_LogMessage("RemoteSync_DIAG", "Buffer Error: ID $localID not found in active SyncList.");
+            // Changed forced log to switchable Debug Log
+            $this->LogDebug("Buffer Error: ID $localID not found in active SyncList.");
             return;
         }
 
@@ -281,7 +283,8 @@ class RemoteSync extends IPSModule
         // 3. WRITE BUFFER
         $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
 
-        IPS_LogMessage("RemoteSync_DIAG", "Buffer: Added ID $localID. Timer set.");
+        // Changed forced log to switchable Debug Log
+        $this->LogDebug("Buffer: Added ID $localID. Timer set.");
         $this->SetTimerInterval('BufferTimer', 200); 
     }
 
@@ -289,6 +292,7 @@ class RemoteSync extends IPSModule
     {
         // 1. Check Lock (Attribute)
         if ($this->ReadAttributeBoolean('_IsSending')) {
+            $this->LogDebug("Flush: Skipped (Busy)");
             return;
         }
         
@@ -320,7 +324,6 @@ class RemoteSync extends IPSModule
             if (!$this->InitConnection()) throw new Exception("Connection Init failed");
 
             // Extract values and CLEAR attribute immediately
-            // This prevents the infinite loop if subsequent code fails
             $batch = array_values($buffer);
             $this->WriteAttributeString('_BatchBuffer', '[]'); 
 
@@ -331,10 +334,8 @@ class RemoteSync extends IPSModule
 
             $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
             
-            if (empty($result)) {
-                $this->LogDebug("Warning: Remote script returned empty result.");
-            } else {
-                $this->LogDebug("Remote Receiver Result: " . $result);
+            if (!empty($result)) {
+               $this->LogDebug("Remote Result: " . $result);
             }
             
         } catch (Exception $e) {
@@ -344,7 +345,6 @@ class RemoteSync extends IPSModule
             $this->WriteAttributeBoolean('_IsSending', false);
             
             // 5. Check if new data arrived while sending
-            // CRITICAL FIX: Use Timer recursion instead of direct call
             $currentBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($currentBuffer !== '[]' && $currentBuffer !== '') {
                 $this->SetTimerInterval('BufferTimer', 100); 
@@ -522,8 +522,6 @@ try {
 SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
     }
-
-    // --- HELPERS ---
 
     private function BuildSyncListAndCache($OverrideColumn = null, $OverrideState = null)
     {
