@@ -7,7 +7,7 @@ class RemoteSync extends IPSModule
     private $rpcClient = null;
     private $config = [];
     private $buffer = []; 
-    private $isInitializing = false;
+    // Removed isInitializing flag - relying on attribute locking instead to prevent stuck states
     private $isSending = false;
 
     public function Create()
@@ -168,7 +168,6 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
-        $this->isInitializing = true;
         parent::ApplyChanges();
         
         $this->rpcClient = null;
@@ -183,7 +182,6 @@ class RemoteSync extends IPSModule
 
         if (!$this->LoadConfig()) {
             $this->SetStatus(IS_INACTIVE);
-            $this->isInitializing = false;
             return;
         }
 
@@ -204,20 +202,20 @@ class RemoteSync extends IPSModule
             $this->SetTimerInterval('StartSyncTimer', 250); 
             $this->LogDebug("ApplyChanges: Registered $count vars. Sync scheduled.");
         }
-        
-        $this->isInitializing = false;
     }
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        if (IPS_GetKernelRunlevel() !== KR_READY) return;
-        if ($this->isInitializing) return;
-        $this->AddToBuffer($SenderID);
+        // DIAGNOSTIC LOG: Force output to see if this runs
+        IPS_LogMessage("RemoteSync_DIAG", "Sink: Triggered by ID $SenderID");
+
+        if ($Message == VM_UPDATE) {
+            $this->AddToBuffer($SenderID);
+        }
     }
 
     public function ProcessSync()
     {
-        if (IPS_GetKernelRunlevel() !== KR_READY) return;
         $this->SetTimerInterval('StartSyncTimer', 0);
         
         if (empty($this->config)) {
@@ -233,7 +231,12 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
-        if (empty($this->config)) $this->LoadConfig();
+        if (empty($this->config)) {
+            if (!$this->LoadConfig()) {
+                IPS_LogMessage("RemoteSync_DIAG", "Buffer: Failed to load config.");
+                return;
+            }
+        }
 
         $itemConfig = null;
         foreach ($this->config['SyncList'] as $item) {
@@ -243,7 +246,10 @@ class RemoteSync extends IPSModule
             }
         }
 
-        if (!$itemConfig) return;
+        if (!$itemConfig) {
+            IPS_LogMessage("RemoteSync_DIAG", "Buffer: ID $localID not found in active list.");
+            return;
+        }
 
         $payload = [
             'LocalID' => $localID,
@@ -264,7 +270,7 @@ class RemoteSync extends IPSModule
             $pathStack = [];
             $currentID = $localID;
             $rootID = $this->config['LocalRootID'];
-            while ($currentID != $rootID) {
+            while ($currentID != $rootID && $currentID > 0) {
                 if ($currentID == 0) break;
                 array_unshift($pathStack, IPS_GetName($currentID));
                 $currentID = IPS_GetParent($currentID);
@@ -273,17 +279,15 @@ class RemoteSync extends IPSModule
         }
 
         $this->buffer[$localID] = $payload;
+        // IPS_LogMessage("RemoteSync_DIAG", "Buffer: Added ID $localID. Timer set.");
         $this->SetTimerInterval('BufferTimer', 200); 
     }
 
     public function FlushBuffer()
     {
-        // 1. Concurrency Check
         if ($this->isSending) return;
         
         $this->SetTimerInterval('BufferTimer', 0);
-        
-        // 2. Check Empty
         if (empty($this->buffer)) return;
 
         $this->isSending = true;
@@ -295,32 +299,30 @@ class RemoteSync extends IPSModule
                 return;
             }
 
-            // CRITICAL FIX: Ensure InitConnection can throw to break flow
             if (!$this->InitConnection()) throw new Exception("Connection Init failed");
 
             $batch = array_values($this->buffer);
-            // Clear buffer immediately to prevent infinite retry of same data on error
             $this->buffer = []; 
 
+            $this->LogDebug("Sending batch of " . count($batch) . " items...");
             $json = json_encode($batch);
+            
             if ($json === false) throw new Exception("JSON Encode Failed: " . json_last_error_msg());
 
             $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
             
             if (empty($result)) {
-                $this->LogDebug("Warning: Remote script returned empty result.");
+                $this->LogDebug("Warning: Remote script returned empty result. Check Remote Log.");
             } else {
-                $this->LogDebug("Remote Receiver Result: " . $result);
+                // $this->LogDebug("Remote Receiver Result: " . $result);
             }
             
         } catch (Exception $e) {
             $this->LogDebug("Batch Send Failed: " . $e->getMessage());
         } finally {
             $this->isSending = false;
-            
-            // CRITICAL FIX: Use Timer instead of Recursion to prevent Stack Overflow
             if (!empty($this->buffer)) {
-                $this->SetTimerInterval('BufferTimer', 200); 
+                $this->FlushBuffer(); 
             }
         }
     }
@@ -334,7 +336,6 @@ class RemoteSync extends IPSModule
         return "<?php
 /* RemoteSync Receiver */
 \$data = \$_IPS['DATA'];
-IPS_LogMessage('RemoteSync_RX', 'Start. Payload size: ' . strlen(\$data));
 
 \$batch = json_decode(\$data, true);
 \$gatewayID = $gwID;
@@ -345,8 +346,6 @@ if (!is_array(\$batch)) {
     return;
 }
 
-IPS_LogMessage('RemoteSync_RX', 'Processing ' . count(\$batch) . ' items.');
-
 foreach (\$batch as \$item) {
     try {
         \$localID = \$item['LocalID'];
@@ -354,8 +353,10 @@ foreach (\$batch as \$item) {
         \$safeIdent = \"Rem_\" . \$localID;
         \$refString = \"RS_REF:\" . \$serverKey . \":\" . \$localID;
         
+        // 1. FIND
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
         
+        // MIGRATION
         if (!\$remoteID) {
             \$currentParent = \$rootID;
             \$foundPath = true;
@@ -371,6 +372,7 @@ foreach (\$batch as \$item) {
             }
         }
 
+        // 2. DELETE
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
                 \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
@@ -384,6 +386,7 @@ foreach (\$batch as \$item) {
             continue;
         }
 
+        // 3. CREATE
         if (!\$remoteID) {
             \$currentParent = \$rootID;
             foreach (\$item['Path'] as \$index => \$nodeName) {
@@ -404,6 +407,7 @@ foreach (\$batch as \$item) {
             IPS_LogMessage('RemoteSync_RX', 'Created New ID: ' . \$remoteID);
         }
 
+        // 4. UPDATE
         if (\$remoteID) {
             IPS_SetInfo(\$remoteID, \$refString);
             SetValue(\$remoteID, \$item['Value']);
@@ -428,6 +432,7 @@ foreach (\$batch as \$item) {
         IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
     }
 }
+echo 'Batch Complete';
 ?>";
     }
 
@@ -490,6 +495,8 @@ try {
 SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
 ?>";
     }
+
+    // --- HELPERS ---
 
     private function BuildSyncListAndCache($OverrideColumn = null, $OverrideState = null)
     {
