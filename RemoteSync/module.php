@@ -14,6 +14,7 @@ class RemoteSync extends IPSModule
     {
         parent::Create();
 
+        // Initialize properties
         $this->rpcClient = null;
         $this->config = [];
         $this->buffer = [];
@@ -31,10 +32,12 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('RemoteRootID', 0);
         $this->RegisterPropertyString('SyncList', '[]');
         
+        // Internal Attributes
         $this->RegisterAttributeString('_SyncListCache', '[]');
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         
+        // Timers
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
@@ -95,7 +98,7 @@ class RemoteSync extends IPSModule
         $this->UpdateFormField('SyncList', 'values', json_encode($newValues));
     }
 
-    // --- INSTALLATION (PUBLIC) ---
+    // --- INSTALLATION ---
 
     public function InstallRemoteScripts()
     {
@@ -115,6 +118,7 @@ class RemoteSync extends IPSModule
         }
 
         try {
+            // 1. Create System Folder
             $systemCatID = 0;
             $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteRoot);
             if (is_array($children)) {
@@ -134,19 +138,21 @@ class RemoteSync extends IPSModule
                 $this->rpcClient->IPS_SetIcon($systemCatID, 'Network');
             }
 
+            // 2. Gateway Script
             $gatewayID = $this->FindRemoteScript($systemCatID, "RemoteSync_Gateway");
             $gatewayCode = $this->GenerateGatewayCode();
             $this->rpcClient->IPS_SetScriptContent($gatewayID, $gatewayCode);
             $this->WriteAttributeInteger('_RemoteGatewayID', $gatewayID);
             $this->LogDebug("Remote Gateway Script installed at ID $gatewayID");
 
+            // 3. Receiver Script
             $receiverID = $this->FindRemoteScript($systemCatID, "RemoteSync_Receiver");
             $receiverCode = $this->GenerateReceiverCode($gatewayID); 
             $this->rpcClient->IPS_SetScriptContent($receiverID, $receiverCode);
             $this->WriteAttributeInteger('_RemoteReceiverID', $receiverID);
             $this->LogDebug("Remote Receiver Script installed at ID $receiverID");
 
-            echo "Success: System initialized on remote server in 'RemoteSync System' folder.";
+            echo "Success: Scripts installed. You can now Sync.";
 
         } catch (Exception $e) {
             echo "Error installing scripts: " . $e->getMessage();
@@ -170,7 +176,7 @@ class RemoteSync extends IPSModule
         return $id;
     }
 
-    // --- RUNTIME & BUFFERING ---
+    // --- RUNTIME ---
 
     public function ApplyChanges()
     {
@@ -228,7 +234,7 @@ class RemoteSync extends IPSModule
             if (!$this->LoadConfig()) return;
         }
 
-        // Add ALL active variables to buffer for initial sync
+        // Add ALL active variables to buffer
         foreach ($this->config['SyncList'] as $item) {
             $this->AddToBuffer($item['ObjectID']);
         }
@@ -258,13 +264,13 @@ class RemoteSync extends IPSModule
         ];
 
         if (!$payload['Delete']) {
-            if (!IPS_ObjectExists($localID)) return;
+            if (!IPS_VariableExists($localID)) return; // Safety check
+            
             $var = IPS_GetVariable($localID);
             $payload['Value']   = GetValue($localID);
             $payload['Type']    = $var['VariableType'];
             $payload['Profile'] = $var['VariableCustomProfile'] ?: $var['VariableProfile'];
             $payload['Name']    = IPS_GetName($localID);
-            $payload['Ident']   = IPS_GetObject($localID)['ObjectIdent']; // Pass original Ident
             
             $pathStack = [];
             $currentID = $localID;
@@ -293,7 +299,7 @@ class RemoteSync extends IPSModule
         try {
             $receiverID = $this->ReadAttributeInteger('_RemoteReceiverID');
             if ($receiverID == 0) {
-                // If ID is missing, try to silent return to avoid spam, or check again
+                $this->LogDebug("Error: Remote Scripts not installed.");
                 return;
             }
 
@@ -305,17 +311,10 @@ class RemoteSync extends IPSModule
             $this->LogDebug("Sending batch of " . count($batch) . " items...");
             $json = json_encode($batch);
             
-            $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
-            $this->LogDebug("Remote Receiver Result: " . $result);
+            $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
             
         } catch (Exception $e) {
-            $msg = $e->getMessage();
-            $this->LogDebug("Batch Send Failed: " . $msg);
-            
-            if (stripos($msg, 'exist') !== false && stripos($msg, 'nicht') !== false || stripos($msg, 'not exist') !== false) {
-                $this->LogDebug("Critical: Remote Receiver Script missing. Resetting ID. Please click 'Install/Update Remote Scripts' again.");
-                $this->WriteAttributeInteger('_RemoteReceiverID', 0);
-            }
+            $this->LogDebug("Batch Send Failed: " . $e->getMessage());
         } finally {
             $this->isSending = false;
             if (!empty($this->buffer)) {
@@ -328,36 +327,29 @@ class RemoteSync extends IPSModule
 
     private function GenerateReceiverCode($gatewayID)
     {
-        // Force integer
         $gwID = (int)$gatewayID;
 
         return "<?php
 /* RemoteSync Receiver */
 \$data = \$_IPS['DATA'];
-IPS_LogMessage('RemoteSync_RX', 'Start. Payload size: ' . strlen(\$data));
-
 \$batch = json_decode(\$data, true);
 \$gatewayID = $gwID;
 \$rootID = IPS_GetParent(IPS_GetParent(\$_IPS['SELF'])); 
 
-if (!is_array(\$batch)) {
-    IPS_LogMessage('RemoteSync_RX', 'Error: Invalid JSON Batch');
-    return;
-}
-
-IPS_LogMessage('RemoteSync_RX', 'Processing ' . count(\$batch) . ' items.');
+if (!is_array(\$batch)) return;
 
 foreach (\$batch as \$item) {
     try {
         \$localID = \$item['LocalID'];
         \$serverKey = \$item['Key'];
+        // IDENT MUST BE ALPHANUMERIC - 'Rem_' prefix prevents syntax errors
         \$safeIdent = \"Rem_\" . \$localID;
         \$refString = \"RS_REF:\" . \$serverKey . \":\" . \$localID;
         
-        // 1. FIND (IDENT)
+        // 1. FIND
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
         
-        // 2. FIND (PATH - MIGRATION)
+        // MIGRATION (Path Fallback)
         if (!\$remoteID) {
             \$currentParent = \$rootID;
             \$foundPath = true;
@@ -370,11 +362,11 @@ foreach (\$batch as \$item) {
             if (\$foundPath && \$currentParent != \$rootID) {
                 \$remoteID = \$currentParent;
                 IPS_SetIdent(\$remoteID, \$safeIdent);
-                IPS_LogMessage('RemoteSync_RX', 'Migrated ' . \$nodeName . ' to Ident ' . \$safeIdent);
+                IPS_LogMessage('RemoteSync_RX', 'Migrated ' . \$nodeName);
             }
         }
 
-        // 3. DELETE
+        // 2. DELETE
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
                 \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
@@ -388,7 +380,7 @@ foreach (\$batch as \$item) {
             continue;
         }
 
-        // 4. CREATE
+        // 3. CREATE
         if (!\$remoteID) {
             \$currentParent = \$rootID;
             foreach (\$item['Path'] as \$index => \$nodeName) {
@@ -406,14 +398,12 @@ foreach (\$batch as \$item) {
                 \$currentParent = \$childID;
             }
             \$remoteID = \$currentParent;
-            IPS_LogMessage('RemoteSync_RX', 'Created New ID: ' . \$remoteID);
+            IPS_LogMessage('RemoteSync_RX', 'Created ID: ' . \$remoteID);
         }
 
-        // 5. UPDATE
+        // 4. UPDATE
         if (\$remoteID) {
-            // FIX: Use IPS_SetInfo instead of IPS_SetObjectInfo
             IPS_SetInfo(\$remoteID, \$refString);
-            
             SetValue(\$remoteID, \$item['Value']);
             
             if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
