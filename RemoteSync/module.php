@@ -106,21 +106,47 @@ class RemoteSync extends IPSModule
             echo "Error: Could not load configuration.";
             return;
         }
+        
+        // Debugging Connection
+        $secID = $this->config['LocalPasswordModuleID'];
+        $key = $this->config['RemoteServerKey'];
+        $this->LogDebug("Attempting connection using Secrets Instance #$secID and Key '$key'...");
+
         if (!$this->InitConnection()) {
-            echo "Error: Could not connect to remote server.";
+            echo "Error: Could not connect to remote server (InitConnection failed). Check Debug Log.";
             return;
         }
 
         $remoteRoot = $this->config['RemoteRootID'];
         if ($remoteRoot == 0) {
-            echo "Error: Remote Root ID is 0.";
+            echo "Error: Remote Root ID is 0. Please enter a valid Target Category ID.";
             return;
         }
 
         try {
-            // 1. Create System Folder
+            // --- DIAGNOSTIC CHECK ---
+            // Ask the remote server who it is to verify we are on the right machine
+            $remoteVersion = $this->rpcClient->IPS_GetKernelVersion();
+            $remoteRootObj = $this->rpcClient->IPS_GetObject(0);
+            $remoteName = $remoteRootObj['ObjectName']; // Usually "IP-Symcon"
+            
+            $this->LogDebug("CONNECTED OK. Remote System: '$remoteName' (v$remoteVersion)");
+            // ------------------------
+
+            // 1. Create/Find "RemoteSync System" Category
             $systemCatID = 0;
+            
+            // This is the line that failed previously
             $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteRoot);
+            
+            if ($children === false) {
+                // If false, the ID definitely doesn't exist
+                $msg = "Error: The Remote Root ID #$remoteRoot does not exist on the connected system ('$remoteName').";
+                $this->LogDebug($msg);
+                echo $msg;
+                return;
+            }
+
             if (is_array($children)) {
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
@@ -138,28 +164,27 @@ class RemoteSync extends IPSModule
                 $this->rpcClient->IPS_SetIcon($systemCatID, 'Network');
             }
 
-            // 2. Gateway Script
+            // 2. Install Gateway Script (Shared)
             $gatewayID = $this->FindRemoteScript($systemCatID, "RemoteSync_Gateway");
             $gatewayCode = $this->GenerateGatewayCode();
             $this->rpcClient->IPS_SetScriptContent($gatewayID, $gatewayCode);
             $this->WriteAttributeInteger('_RemoteGatewayID', $gatewayID);
             $this->LogDebug("Remote Gateway Script installed at ID $gatewayID");
 
-            // 3. Receiver Script
+            // 3. Install Receiver Script (Shared)
             $receiverID = $this->FindRemoteScript($systemCatID, "RemoteSync_Receiver");
             $receiverCode = $this->GenerateReceiverCode($gatewayID); 
             $this->rpcClient->IPS_SetScriptContent($receiverID, $receiverCode);
             $this->WriteAttributeInteger('_RemoteReceiverID', $receiverID);
             $this->LogDebug("Remote Receiver Script installed at ID $receiverID");
 
-            echo "Success: Scripts installed. You can now Sync.";
+            echo "Success: Scripts installed on '$remoteName'.";
 
         } catch (Exception $e) {
             echo "Error installing scripts: " . $e->getMessage();
             $this->LogDebug("Install Error: " . $e->getMessage());
         }
     }
-
     private function FindRemoteScript($parentID, $name) {
         $children = @$this->rpcClient->IPS_GetChildrenIDs($parentID);
         if (is_array($children)) {
