@@ -29,13 +29,18 @@
             "options": [] 
         },
 
-        { "type": "Label", "caption": "Mirror Anchors" },
+        { "type": "Label", "caption": "Mirror Anchors & Setup" },
         { 
             "type": "SelectObject", 
             "name": "LocalRootID", 
-            "caption": "Local Root Object (Save to populate list)" 
+            "caption": "Local Root Object" 
         },
         { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
+        { 
+            "type": "Button", 
+            "caption": "Install/Update Remote Scripts", 
+            "onClick": "RS_InstallRemoteScripts($id);" 
+        },
 
         { "type": "Label", "caption": "Selection" },
         { "type": "Label", "caption": "Batch Tools (Set entire column)" },
