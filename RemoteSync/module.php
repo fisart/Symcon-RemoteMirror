@@ -42,8 +42,6 @@ class RemoteSync extends IPSModule
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
 
-        $this->RegisterPropertyBoolean('DebugMode', false);
-        $this->RegisterPropertyBoolean('AutoCreate', true);
         $this->RegisterPropertyBoolean('ReplicateProfiles', true); // NEW
 
     }
