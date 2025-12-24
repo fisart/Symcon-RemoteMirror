@@ -321,8 +321,9 @@ class RemoteSync extends IPSModule
             
             // New Packet Structure
             $packet = [
-                'TargetID' => $this->config['RemoteRootID'],
-                'Batch'    => $batch
+                'TargetID'   => $this->config['RemoteRootID'],
+                'Batch'      => $batch,
+                'AutoCreate' => (bool)$this->config['AutoCreate']
             ];
             $json = json_encode($packet);
             
@@ -350,39 +351,50 @@ class RemoteSync extends IPSModule
 
     // --- CODE GENERATORS ---
 
-    private function GenerateReceiverCode($gatewayID)
-    {
-        $gwID = (int)$gatewayID;
+private function GenerateReceiverCode($gatewayID)
+{
+    $gwID = (int)$gatewayID;
 
-        return "<?php
+    return "<?php
 /* RemoteSync Receiver */
-\$data = \$_IPS['DATA'];
+
+\$data   = \$_IPS['DATA'] ?? '';
 \$packet = json_decode(\$data, true);
 
-// Extract Packet Info
-\$batch = \$packet['Batch'] ?? [];
-\$rootID = \$packet['TargetID'] ?? 0;
-\$gatewayID = $gwID;
+if (!is_array(\$packet)) {
+    return;
+}
 
-if (!is_array(\$batch) || \$rootID == 0) return;
+// Extract Packet Info
+\$batch      = \$packet['Batch'] ?? [];
+\$rootID     = \$packet['TargetID'] ?? 0;
+\$autoCreate = !empty(\$packet['AutoCreate']);  // new flag
+\$gatewayID  = $gwID;
+
+if (!is_array(\$batch) || \$rootID == 0) {
+    return;
+}
 
 foreach (\$batch as \$item) {
     try {
-        \$localID = \$item['LocalID'];
+        \$localID   = \$item['LocalID'];
         \$serverKey = \$item['Key'];
-        \$safeIdent = \"Rem_\" . \$localID;
-        \$refString = \"RS_REF:\" . \$serverKey . \":\" . \$localID;
-        
+        \$safeIdent = 'Rem_' . \$localID;
+        \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
+
         // 1. FIND
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
-        
-        // Migration Fallback
-        if (!\$remoteID) {
+
+        // Migration Fallback (old tree-based structure)
+        if (!\$remoteID && !empty(\$item['Path']) && is_array(\$item['Path'])) {
             \$currentParent = \$rootID;
-            \$foundPath = true;
+            \$foundPath     = true;
             foreach (\$item['Path'] as \$nodeName) {
                 \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (!\$childID) { \$foundPath = false; break; }
+                if (!\$childID) {
+                    \$foundPath = false;
+                    break;
+                }
                 \$currentParent = \$childID;
             }
             if (\$foundPath && \$currentParent != \$rootID) {
@@ -398,7 +410,9 @@ foreach (\$batch as \$item) {
                 \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
                 if (\$info === \$refString) {
                     \$children = IPS_GetChildrenIDs(\$remoteID);
-                    foreach(\$children as \$c) IPS_DeleteObject(\$c);
+                    foreach (\$children as \$c) {
+                        IPS_DeleteObject(\$c);
+                    }
                     IPS_DeleteObject(\$remoteID);
                     IPS_LogMessage('RemoteSync_RX', 'Deleted ID ' . \$remoteID);
                 }
@@ -406,8 +420,14 @@ foreach (\$batch as \$item) {
             continue;
         }
 
-        // 3. CREATE
+        // 3. CREATE (honor AutoCreate)
         if (!\$remoteID) {
+            if (!\$autoCreate) {
+                // No auto-creation: skip silently or log
+                IPS_LogMessage('RemoteSync_RX', 'AutoCreate disabled, skip LocalID ' . \$localID);
+                continue;
+            }
+
             \$currentParent = \$rootID;
             foreach (\$item['Path'] as \$index => \$nodeName) {
                 \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
@@ -416,6 +436,7 @@ foreach (\$batch as \$item) {
                         \$childID = IPS_CreateVariable(\$item['Type']);
                         IPS_SetIdent(\$childID, \$safeIdent);
                     } else {
+                        // Dummy Instance GUID
                         \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
                     }
                     IPS_SetParent(\$childID, \$currentParent);
@@ -431,17 +452,21 @@ foreach (\$batch as \$item) {
         if (\$remoteID) {
             IPS_SetInfo(\$remoteID, \$refString);
             SetValue(\$remoteID, \$item['Value']);
-            
+
             if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
-                 IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
+                IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
             }
 
+            // Remove existing scripts below variable
             \$children = IPS_GetChildrenIDs(\$remoteID);
             foreach (\$children as \$childID) {
                 \$obj = IPS_GetObject(\$childID);
-                if (\$obj['ObjectType'] == 3) IPS_DeleteScript(\$childID, true); 
+                if (\$obj['ObjectType'] == 3) {
+                    IPS_DeleteScript(\$childID, true);
+                }
             }
 
+            // Assign / remove Gateway as Action Script
             if (!empty(\$item['Action'])) {
                 IPS_SetVariableCustomAction(\$remoteID, \$gatewayID);
             } else {
@@ -449,71 +474,126 @@ foreach (\$batch as \$item) {
             }
         }
     } catch (Exception \$e) {
-        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
+        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . (\$item['LocalID'] ?? 'unknown') . ': ' . \$e->getMessage());
     }
 }
 ?>";
-    }
+}
 
-    private function GenerateGatewayCode()
-    {
-        $remSecID = $this->config['RemotePasswordModuleID'];
-        $locKey = str_replace("'", "\\'", $this->config['LocalServerKey']);
 
-        return "<?php
+private function GenerateGatewayCode()
+{
+    $remSecID = (int)$this->config['RemotePasswordModuleID'];
+
+    return "<?php
 /* RemoteSync Gateway */
-\$remoteVarID = \$_IPS['VARIABLE'];
-\$info = IPS_GetObject(\$remoteVarID)['ObjectInfo']; 
 
+if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
+    return;
+}
+
+\$remoteVarID = \$_IPS['VARIABLE'];
+\$info       = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
+
+// Expected format: RS_REF:ServerKey:LocalID
 \$parts = explode(':', \$info);
-if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') die('Invalid Info');
+if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') {
+    IPS_LogMessage('RemoteSync_Gateway', 'Invalid ObjectInfo: ' . \$info);
+    return;
+}
 
 \$targetKey = \$parts[1];
-\$targetID = (int)\$parts[2];
+\$targetID  = (int)\$parts[2];
 
 \$secID = $remSecID;
 
-if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
+if (!function_exists('SEC_GetSecret')) {
+    IPS_LogMessage('RemoteSync_Gateway', 'SEC Module missing');
+    return;
+}
 
-\$json = SEC_GetSecret(\$secID, \$targetKey);
+\$json  = SEC_GetSecret(\$secID, \$targetKey);
 \$creds = json_decode(\$json, true);
-\$url = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
+
+\$url  = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
 \$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
-\$pw = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
+\$pw   = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
 
-if (!\$url) die('Invalid Config');
+if (!\$url || !\$user || !\$pw) {
+    IPS_LogMessage('RemoteSync_Gateway', 'Invalid config for key ' . \$targetKey);
+    return;
+}
 
-\$connUrl = 'https://'.urlencode(\$user).':'.urlencode(\$pw).'@'.\$url.'/api/';
+\$connUrl = 'https://' . urlencode(\$user) . ':' . urlencode(\$pw) . '@' . \$url . '/api/';
 
-class MiniRPC {
-    private \$url;
-    public function __construct(\$url) { \$this->url = \$url; }
-    public function __call(\$method, \$params) {
-        \$payload = json_encode(['jsonrpc'=>'2.0', 'method'=>\$method, 'params'=>\$params, 'id'=>time()]);
-        \$opts = ['http'=>['method'=>'POST', 'header'=>'Content-Type: application/json', 'content'=>\$payload, 'timeout'=>5], 'ssl'=>['verify_peer'=>false, 'verify_peer_name'=>false]];
-        \$ctx = stream_context_create(\$opts);
-        \$result = file_get_contents(\$this->url, false, \$ctx);
-        if (\$result === false) throw new Exception('Connect Fail');
+class RemoteSync_MiniRPC
+{
+    private string \$url;
+
+    public function __construct(string \$url)
+    {
+        \$this->url = \$url;
+    }
+
+    public function __call(string \$method, array \$params)
+    {
+        \$payload = json_encode([
+            'jsonrpc' => '2.0',
+            'method'  => \$method,
+            'params'  => \$params,
+            'id'      => time()
+        ]);
+
+        \$opts = [
+            'http' => [
+                'method'  => 'POST',
+                'header'  => 'Content-Type: application/json',
+                'content' => \$payload,
+                'timeout' => 5
+            ],
+            'ssl'  => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false
+            ]
+        ];
+
+        \$ctx    = stream_context_create(\$opts);
+        \$result = @file_get_contents(\$this->url, false, \$ctx);
+
+        if (\$result === false) {
+            throw new Exception('Connect Fail');
+        }
+
         \$response = json_decode(\$result, true);
-        if (isset(\$response['error'])) throw new Exception(\$response['error']['message'], \$response['error']['code']);
-        return \$response['result'];
+        if (isset(\$response['error'])) {
+            throw new Exception(\$response['error']['message'], \$response['error']['code'] ?? 0);
+        }
+
+        return \$response['result'] ?? null;
     }
 }
 
-\$rpc = new MiniRPC(\$connUrl);
+\$rpc = new RemoteSync_MiniRPC(\$connUrl);
 
 try {
     \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
 } catch (Exception \$e) {
+    // -32603 typically means 'no action handler'
     if (\$e->getCode() == -32603) {
-        \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
+        try {
+            \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
+        } catch (Exception \$e2) {
+            IPS_LogMessage('RemoteSync_Gateway', 'SetValue failed: ' . \$e2->getMessage());
+        }
     } else {
         IPS_LogMessage('RemoteSync_Gateway', 'Error: ' . \$e->getMessage());
     }
 }
-SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
+
+// Mirror value locally as well
+SetValue(\$remoteVarID, \$_IPS['VALUE']);
 ?>";
-    }
+}
 
     private function BuildSyncListAndCache($OverrideColumn = null, $OverrideState = null)
     {
