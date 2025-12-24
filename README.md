@@ -1,11 +1,21 @@
 Module Documentation: IP-Symcon RemoteSync
+<<<<<<< HEAD
 
 Overview
+=======
+1. Overview
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 The RemoteSync module provides a high-performance, bidirectional synchronization solution for distributed IP-Symcon environments. It allows a "Local" system to mirror variable structures to a "Remote" system in real-time, while enabling the Remote system to control Local hardware via reverse actions.
 
 The module addresses common challenges in distributed systems, such as network latency, high server load during bulk updates ("Thundering Herd"), and configuration fragility.
 
+<<<<<<< HEAD
 Solution Architecture
+=======
+2. Solution Architecture
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 The solution utilizes a Service-Oriented, Batch-Processing Architecture. Rather than micro-managing individual remote operations via hundreds of API calls, the module delegates logic to intelligence installed on the remote server.
 
 Core Components
@@ -34,7 +44,16 @@ Receiver Script: Accepts JSON data batches. It handles the logic for creating ca
 
 Gateway Script: Acts as a single entry point for all reverse control actions, routing commands back to the appropriate originating server.
 
+<<<<<<< HEAD
 Data Flow Implementation A. Synchronization Flow (Local → → Remote)
+=======
+3. Data Flow Implementation
+A. Synchronization Flow (Local 
+→
+→
+ Remote)
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 Event Detection: A local variable changes (e.g., Light Status = True).
 
 Buffering: The module's MessageSink captures the event. Instead of immediate transmission, the data is added to an internal Batch Buffer and a short debounce timer (e.g., 200ms) is started.
@@ -47,7 +66,14 @@ Payload Structure: ['TargetID' => 12345, 'Batch' => [...data...]]
 
 Remote Execution: The Receiver Script processes the batch locally. It creates missing objects, updates values, and applies profiles. Because execution happens locally on the remote server, "orphaned" variables (created but not named due to network timeouts) are eliminated.
 
+<<<<<<< HEAD
 B. Reverse Control Flow (Remote → → Local)
+=======
+B. Reverse Control Flow (Remote 
+→
+→
+ Local)
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 
 User Action: A user operates a switch on the Remote WebFront.
 
@@ -59,7 +85,13 @@ Callback: Using the Server Key, the Gateway Script retrieves connection details 
 
 Feedback Loop: The Local System executes the hardware action. The resulting status change triggers the Synchronization Flow (A), updating the remote visualization to confirm success.
 
+<<<<<<< HEAD
 Functionality & Features Selective Synchronization
+=======
+4. Functionality & Features
+Selective Synchronization
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 Tree Selection: Users can select individual variables from the local object tree.
 
 Batch Configuration Tools: The configuration form provides "All" and "None" buttons for Sync, Action, and Delete columns, allowing rapid configuration of large object trees without manual clicking.
@@ -86,7 +118,13 @@ Lifecycle Management
 
 Remote Deletion: Variables can be flagged for deletion. The module ensures a clean removal of the remote variable and any associated child objects.
 
+<<<<<<< HEAD
 Configuration Parameters (form.json) Authentication
+=======
+5. Configuration Parameters (form.json)
+Authentication
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 Local Secrets Module: Selection of the local SEC instance.
 
 Target Remote Server (Key): Dropdown list of available servers (fetched dynamically).
@@ -115,7 +153,13 @@ R-Action: Enables "Remote Action" (links the variable to the Central Gateway Scr
 
 Del Remote: Flags the variable for deletion on the remote server during the next application of settings.
 
+<<<<<<< HEAD
 Technical Implementation Details Performance Optimization
+=======
+6. Technical Implementation Details
+Performance Optimization
+
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc
 Traffic Reduction: JSON-RPC Batching reduces HTTP overhead by approximately 95% during high-load events compared to single-request architectures.
 
 Form Caching: The configuration form caches the scanned object tree. This allows the "Select All" / "Select None" batch tools to operate instantly without re-scanning the entire system.
@@ -128,4 +172,8 @@ Deferred Initialization: The module uses a Timer-based deferred startup sequence
 
 Initialization Locking: Incoming events are ignored while the configuration is being applied to prevent race conditions.
 
+<<<<<<< HEAD
 Security: Credentials are never stored in the module or generated scripts. They are accessed strictly via the Secrets Manager API.
+=======
+Security: Credentials are never stored in the module or generated scripts. They are accessed strictly via the Secrets Manager API.
+>>>>>>> 29c50f97cdb1b672afe8a571b91dd6b2ff45d7dc

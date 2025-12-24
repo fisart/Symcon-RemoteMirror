@@ -368,11 +368,35 @@ if (!is_array(\$packet)) {
 // Extract Packet Info
 \$batch      = \$packet['Batch'] ?? [];
 \$rootID     = \$packet['TargetID'] ?? 0;
-\$autoCreate = !empty(\$packet['AutoCreate']);  // new flag
+\$autoCreate = !empty(\$packet['AutoCreate']); 
 \$gatewayID  = $gwID;
 
 if (!is_array(\$batch) || \$rootID == 0) {
     return;
+}
+
+// --- HELPER FOR TYPE-SAFE DELETION ---
+if (!function_exists('RS_RX_DeleteRecursive')) {
+    function RS_RX_DeleteRecursive(\$id) {
+        if (!IPS_ObjectExists(\$id)) return;
+        
+        // Delete children first
+        foreach (IPS_GetChildrenIDs(\$id) as \$childID) {
+            RS_RX_DeleteRecursive(\$childID);
+        }
+        
+        // Delete self based on type
+        \$type = IPS_GetObject(\$id)['ObjectType'];
+        switch (\$type) {
+            case 0: @IPS_DeleteCategory(\$id); break;
+            case 1: @IPS_DeleteInstance(\$id); break;
+            case 2: @IPS_DeleteVariable(\$id); break;
+            case 3: @IPS_DeleteScript(\$id, true); break;
+            case 4: @IPS_DeleteEvent(\$id); break;
+            case 5: @IPS_DeleteMedia(\$id, true); break;
+            case 6: @IPS_DeleteLink(\$id); break;
+        }
+    }
 }
 
 foreach (\$batch as \$item) {
@@ -385,7 +409,7 @@ foreach (\$batch as \$item) {
         // 1. FIND
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
 
-        // Migration Fallback (old tree-based structure)
+        // Migration Fallback
         if (!\$remoteID && !empty(\$item['Path']) && is_array(\$item['Path'])) {
             \$currentParent = \$rootID;
             \$foundPath     = true;
@@ -400,33 +424,24 @@ foreach (\$batch as \$item) {
             if (\$foundPath && \$currentParent != \$rootID) {
                 \$remoteID = \$currentParent;
                 IPS_SetIdent(\$remoteID, \$safeIdent);
-                IPS_LogMessage('RemoteSync_RX', 'Migrated ' . \$nodeName);
             }
         }
 
-        // 2. DELETE
+        // 2. DELETE (Type-Safe Fix Applied)
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
                 \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
                 if (\$info === \$refString) {
-                    \$children = IPS_GetChildrenIDs(\$remoteID);
-                    foreach (\$children as \$c) {
-                        IPS_DeleteObject(\$c);
-                    }
-                    IPS_DeleteObject(\$remoteID);
+                    RS_RX_DeleteRecursive(\$remoteID);
                     IPS_LogMessage('RemoteSync_RX', 'Deleted ID ' . \$remoteID);
                 }
             }
             continue;
         }
 
-        // 3. CREATE (honor AutoCreate)
+        // 3. CREATE
         if (!\$remoteID) {
-            if (!\$autoCreate) {
-                // No auto-creation: skip silently or log
-                IPS_LogMessage('RemoteSync_RX', 'AutoCreate disabled, skip LocalID ' . \$localID);
-                continue;
-            }
+            if (!\$autoCreate) continue;
 
             \$currentParent = \$rootID;
             foreach (\$item['Path'] as \$index => \$nodeName) {
@@ -436,7 +451,6 @@ foreach (\$batch as \$item) {
                         \$childID = IPS_CreateVariable(\$item['Type']);
                         IPS_SetIdent(\$childID, \$safeIdent);
                     } else {
-                        // Dummy Instance GUID
                         \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
                     }
                     IPS_SetParent(\$childID, \$currentParent);
@@ -445,7 +459,6 @@ foreach (\$batch as \$item) {
                 \$currentParent = \$childID;
             }
             \$remoteID = \$currentParent;
-            IPS_LogMessage('RemoteSync_RX', 'Created New ID: ' . \$remoteID);
         }
 
         // 4. UPDATE
@@ -457,7 +470,6 @@ foreach (\$batch as \$item) {
                 IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
             }
 
-            // Remove existing scripts below variable
             \$children = IPS_GetChildrenIDs(\$remoteID);
             foreach (\$children as \$childID) {
                 \$obj = IPS_GetObject(\$childID);
@@ -466,7 +478,6 @@ foreach (\$batch as \$item) {
                 }
             }
 
-            // Assign / remove Gateway as Action Script
             if (!empty(\$item['Action'])) {
                 IPS_SetVariableCustomAction(\$remoteID, \$gatewayID);
             } else {
@@ -479,7 +490,6 @@ foreach (\$batch as \$item) {
 }
 ?>";
 }
-
 
 private function GenerateGatewayCode()
 {
