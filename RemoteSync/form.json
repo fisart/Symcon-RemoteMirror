@@ -33,9 +33,10 @@
         { 
             "type": "SelectObject", 
             "name": "LocalRootID", 
-            "caption": "Local Root Object" 
+            "caption": "Local Root Object (Source)" 
         },
-        { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Root ID" },
+        { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Data Target ID (Where variables go)" },
+        { "type": "NumberSpinner", "name": "RemoteScriptRootID", "caption": "Remote Script Home ID (Shared folder for scripts)" },
         { 
             "type": "Button", 
             "caption": "Install/Update Remote Scripts", 

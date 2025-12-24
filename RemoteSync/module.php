@@ -7,13 +7,13 @@ class RemoteSync extends IPSModule
     private $rpcClient = null;
     private $config = [];
     private $buffer = []; 
-    // We rely on attribute locking for state management
-    private $isSending = false;
+    private $isInitializing = false;
 
     public function Create()
     {
         parent::Create();
 
+        // Initialize properties
         $this->rpcClient = null;
         $this->config = [];
         $this->buffer = [];
@@ -29,20 +29,17 @@ class RemoteSync extends IPSModule
 
         $this->RegisterPropertyInteger('LocalRootID', 0);
         $this->RegisterPropertyInteger('RemoteRootID', 0);
+        $this->RegisterPropertyInteger('RemoteScriptRootID', 0); // New Shared Home
         $this->RegisterPropertyString('SyncList', '[]');
         
         $this->RegisterAttributeString('_SyncListCache', '[]');
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         
-        $this->RegisterAttributeString('_BatchBuffer', '[]');
-        $this->RegisterAttributeBoolean('_IsSending', false);
-        
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
 
-    // --- FORM & UI ---
     public function GetConfigurationForm()
     {
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
@@ -66,6 +63,7 @@ class RemoteSync extends IPSModule
             $serverOptions[0]['caption'] = "Select Secrets Module and Apply first";
         }
 
+        // Safety Net
         $remoteFound = false; $localFound = false;
         foreach ($serverOptions as $opt) {
             if ((string)$opt['value'] === $currentRemoteKey) $remoteFound = true;
@@ -97,78 +95,103 @@ class RemoteSync extends IPSModule
         $this->UpdateFormField('SyncList', 'values', json_encode($newValues));
     }
 
-    // --- INSTALLATION ---
+    // --- INSTALLATION (SHARED SCRIPTS) ---
+
     public function InstallRemoteScripts()
     {
-        if (!$this->LoadConfig()) return;
-        if (!$this->InitConnection()) return;
+        if (!$this->LoadConfig()) {
+            echo "Error: Could not load configuration.";
+            return;
+        }
+        if (!$this->InitConnection()) {
+            echo "Error: Could not connect to remote server.";
+            return;
+        }
 
-        $remoteRoot = $this->config['RemoteRootID'];
-        if ($remoteRoot == 0) return;
+        // Use the SHARED Script Root
+        $scriptRoot = $this->config['RemoteScriptRootID'];
+        if ($scriptRoot == 0) {
+            echo "Error: Remote Script Home ID is 0. Please configure a shared folder on the remote server.";
+            return;
+        }
 
         try {
-            $systemCatID = 0;
-            $children = @$this->rpcClient->IPS_GetChildrenIDs($remoteRoot);
-            if (is_array($children)) {
-                foreach ($children as $cID) {
-                    $obj = $this->rpcClient->IPS_GetObject($cID);
-                    if ($obj['ObjectType'] == 0 && $obj['ObjectName'] == 'RemoteSync System') {
-                        $systemCatID = $cID; break;
+            // 0. Scan Shared Folder
+            $existingScripts = [];
+            try {
+                $children = $this->rpcClient->IPS_GetChildrenIDs($scriptRoot);
+                if (is_array($children)) {
+                    foreach ($children as $childID) {
+                        $obj = $this->rpcClient->IPS_GetObject($childID);
+                        if ($obj['ObjectType'] == 3) {
+                            $name = $obj['ObjectName'];
+                            $existingScripts[$name] = $childID;
+                        }
                     }
                 }
+            } catch (Exception $e) {
+                $this->LogDebug("Warning: Could not scan script folder.");
             }
 
-            if ($systemCatID == 0) {
-                $systemCatID = $this->rpcClient->IPS_CreateCategory();
-                $this->rpcClient->IPS_SetParent($systemCatID, $remoteRoot);
-                $this->rpcClient->IPS_SetName($systemCatID, 'RemoteSync System');
-                $this->rpcClient->IPS_SetIcon($systemCatID, 'Network');
-            }
+            // 1. Install/Reuse Gateway
+            $gatewayName = "RemoteSync_Gateway";
+            $gatewayID = 0;
 
-            $gatewayID = $this->FindRemoteScript($systemCatID, "RemoteSync_Gateway");
+            if (isset($existingScripts[$gatewayName])) {
+                $gatewayID = $existingScripts[$gatewayName];
+                $this->LogDebug("Reusing shared Gateway Script at ID $gatewayID.");
+            } else {
+                $gatewayID = $this->rpcClient->IPS_CreateScript(0);
+                $this->rpcClient->IPS_SetParent($gatewayID, $scriptRoot);
+                $this->rpcClient->IPS_SetName($gatewayID, $gatewayName);
+                $this->rpcClient->IPS_SetHidden($gatewayID, true);
+                $this->LogDebug("Created shared Gateway Script at ID $gatewayID.");
+            }
+            
             $gatewayCode = $this->GenerateGatewayCode();
             $this->rpcClient->IPS_SetScriptContent($gatewayID, $gatewayCode);
             $this->WriteAttributeInteger('_RemoteGatewayID', $gatewayID);
-            $this->LogDebug("Remote Gateway Script installed at ID $gatewayID");
 
-            $receiverID = $this->FindRemoteScript($systemCatID, "RemoteSync_Receiver");
-            $receiverCode = $this->GenerateReceiverCode($gatewayID); 
+
+            // 2. Install/Reuse Receiver
+            $receiverName = "RemoteSync_Receiver";
+            $receiverID = 0;
+
+            if (isset($existingScripts[$receiverName])) {
+                $receiverID = $existingScripts[$receiverName];
+                $this->LogDebug("Reusing shared Receiver Script at ID $receiverID.");
+            } else {
+                $receiverID = $this->rpcClient->IPS_CreateScript(0);
+                $this->rpcClient->IPS_SetParent($receiverID, $scriptRoot);
+                $this->rpcClient->IPS_SetName($receiverID, $receiverName);
+                $this->rpcClient->IPS_SetHidden($receiverID, true);
+                $this->LogDebug("Created shared Receiver Script at ID $receiverID.");
+            }
+
+            // Note: Receiver doesn't need Gateway ID hardcoded, it receives it dynamically or links it.
+            // Actually, in the code generator below, I bind the Gateway ID. 
+            // Since this script is shared, the Gateway ID must be the one *in the same folder*.
+            $receiverCode = $this->GenerateReceiverCode($gatewayID);
             $this->rpcClient->IPS_SetScriptContent($receiverID, $receiverCode);
             $this->WriteAttributeInteger('_RemoteReceiverID', $receiverID);
-            $this->LogDebug("Remote Receiver Script installed at ID $receiverID");
 
-            echo "Success: Scripts installed.";
+            echo "Success: Shared Scripts updated in Category $scriptRoot.";
 
         } catch (Exception $e) {
             echo "Error: " . $e->getMessage();
+            $this->LogDebug("Install Error: " . $e->getMessage());
         }
-    }
-
-    private function FindRemoteScript($parentID, $name) {
-        $children = @$this->rpcClient->IPS_GetChildrenIDs($parentID);
-        if (is_array($children)) {
-            foreach ($children as $cID) {
-                $obj = $this->rpcClient->IPS_GetObject($cID);
-                if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) return $cID;
-            }
-        }
-        $id = $this->rpcClient->IPS_CreateScript(0);
-        $this->rpcClient->IPS_SetParent($id, $parentID);
-        $this->rpcClient->IPS_SetName($id, $name);
-        return $id;
     }
 
     // --- RUNTIME ---
 
     public function ApplyChanges()
     {
+        $this->isInitializing = true;
         parent::ApplyChanges();
         
         $this->rpcClient = null;
-        
-        // Reset Persistent States
-        $this->WriteAttributeBoolean('_IsSending', false); 
-        $this->WriteAttributeString('_BatchBuffer', '[]'); 
+        $this->buffer = [];
 
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
@@ -178,6 +201,7 @@ class RemoteSync extends IPSModule
 
         if (!$this->LoadConfig()) {
             $this->SetStatus(IS_INACTIVE);
+            $this->isInitializing = false;
             return;
         }
 
@@ -196,20 +220,23 @@ class RemoteSync extends IPSModule
         } else {
             $this->SetStatus(IS_ACTIVE);
             $this->SetTimerInterval('StartSyncTimer', 250); 
-            $this->LogDebug("ApplyChanges: Registered $count vars. Sync scheduled.");
         }
+        
+        $this->isInitializing = false;
     }
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        // Changed forced log to switchable Debug Log
-        $this->LogDebug("Sink: Triggered by ID $SenderID");
+        if (IPS_GetKernelRunlevel() !== KR_READY) return;
+        if ($this->isInitializing) return;
+
         $this->AddToBuffer($SenderID);
     }
 
     public function ProcessSync()
     {
-        $this->SetTimerInterval('StartSyncTimer', 0);
+        if (IPS_GetKernelRunlevel() !== KR_READY) return;
+        $this->SetTimerInterval('StartSyncTimer', 0); 
         
         if (empty($this->config)) {
             if (!$this->LoadConfig()) return;
@@ -224,13 +251,7 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
-        if (empty($this->config)) {
-            if (!$this->LoadConfig()) {
-                // Changed forced log to switchable Debug Log
-                $this->LogDebug("Buffer Error: LoadConfig() failed.");
-                return;
-            }
-        }
+        if (empty($this->config)) $this->LoadConfig();
 
         $itemConfig = null;
         foreach ($this->config['SyncList'] as $item) {
@@ -240,224 +261,159 @@ class RemoteSync extends IPSModule
             }
         }
 
-        if (!$itemConfig) {
-            // Changed forced log to switchable Debug Log
-            $this->LogDebug("Buffer Error: ID $localID not found in active SyncList.");
-            return;
-        }
-
-        // 1. READ BUFFER from Attribute
-        $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-        $buffer = json_decode($rawBuffer, true);
-        if (!is_array($buffer)) $buffer = [];
+        if (!$itemConfig) return;
 
         $payload = [
             'LocalID' => $localID,
             'Delete'  => !empty($itemConfig['Delete']) && empty($itemConfig['Active']),
-            'Action'  => !empty($itemConfig['Action']),
-            'Key'     => $this->config['LocalServerKey'] 
+            'Action'  => !empty($itemConfig['Action'])
         ];
 
         if (!$payload['Delete']) {
             if (!IPS_ObjectExists($localID)) return;
+            
             $var = IPS_GetVariable($localID);
             $payload['Value']   = GetValue($localID);
             $payload['Type']    = $var['VariableType'];
             $payload['Profile'] = $var['VariableCustomProfile'] ?: $var['VariableProfile'];
             $payload['Name']    = IPS_GetName($localID);
-            $payload['Ident']   = IPS_GetObject($localID)['ObjectIdent']; 
             
             $pathStack = [];
             $currentID = $localID;
             $rootID = $this->config['LocalRootID'];
-            while ($currentID != $rootID && $currentID > 0) {
+            
+            while ($currentID != $rootID) {
+                if ($currentID == 0) break;
                 array_unshift($pathStack, IPS_GetName($currentID));
                 $currentID = IPS_GetParent($currentID);
             }
             $payload['Path'] = $pathStack;
         }
 
-        // 2. UPDATE BUFFER
-        $buffer[$localID] = $payload; 
-
-        // 3. WRITE BUFFER
-        $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
-
-        // Changed forced log to switchable Debug Log
-        $this->LogDebug("Buffer: Added ID $localID. Timer set.");
-        $this->SetTimerInterval('BufferTimer', 200); 
+        $this->buffer[$localID] = $payload;
+        $this->SetTimerInterval('BufferTimer', 200);
     }
 
     public function FlushBuffer()
     {
-        // 1. Check Lock (Attribute)
-        if ($this->ReadAttributeBoolean('_IsSending')) {
-            $this->LogDebug("Flush: Skipped (Busy)");
-            return;
-        }
-        
         $this->SetTimerInterval('BufferTimer', 0);
         
-        // 2. Read Buffer
-        $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-        $buffer = json_decode($rawBuffer, true);
+        if (empty($this->buffer)) return;
+        
+        $receiverID = $this->ReadAttributeInteger('_RemoteReceiverID');
+        if ($receiverID == 0) {
+            $this->LogDebug("Error: Remote Scripts not installed.");
+            return;
+        }
 
-        if (empty($buffer)) return;
+        if (!$this->InitConnection()) return;
 
-        // 3. Set Lock
-        $this->WriteAttributeBoolean('_IsSending', true);
+        $batch = array_values($this->buffer); 
+        $this->buffer = []; 
+
+        $this->LogDebug("Sending batch of " . count($batch) . " items...");
 
         try {
-            // RELOAD CONFIG - Important for Timer context
-            if (empty($this->config)) {
-                if (!$this->LoadConfig()) throw new Exception("Config Reload Failed");
-            }
-
-            $receiverID = $this->ReadAttributeInteger('_RemoteReceiverID');
-            if ($receiverID == 0) {
-                $this->LogDebug("Error: Remote Scripts not installed.");
-                // Clear buffer to prevent endless loops
-                $this->WriteAttributeString('_BatchBuffer', '[]'); 
-                return;
-            }
-
-            if (!$this->InitConnection()) throw new Exception("Connection Init failed");
-
-            // Extract values and CLEAR attribute immediately
-            $batch = array_values($buffer);
-            $this->WriteAttributeString('_BatchBuffer', '[]'); 
-
-            $this->LogDebug("Sending batch of " . count($batch) . " items...");
-            $json = json_encode($batch);
+            // NEW PAYLOAD STRUCTURE: Include Target ID
+            $packet = [
+                'TargetID' => $this->config['RemoteRootID'],
+                'Batch'    => $batch
+            ];
+            $json = json_encode($packet);
             
-            if ($json === false) throw new Exception("JSON Encode Failed");
-
-            $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
-            
-            if (!empty($result)) {
-               $this->LogDebug("Remote Result: " . $result);
-            }
-            
+            $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
+            $this->LogDebug("Batch Sent Successfully.");
         } catch (Exception $e) {
             $this->LogDebug("Batch Send Failed: " . $e->getMessage());
-        } finally {
-            // 4. Release Lock
-            $this->WriteAttributeBoolean('_IsSending', false);
-            
-            // 5. Check if new data arrived while sending
-            $currentBuffer = $this->ReadAttributeString('_BatchBuffer');
-            if ($currentBuffer !== '[]' && $currentBuffer !== '') {
-                $this->SetTimerInterval('BufferTimer', 100); 
-            }
         }
     }
 
-    // --- CODE GENERATORS ---
+    // --- CODE GENERATORS (UPDATED) ---
 
     private function GenerateReceiverCode($gatewayID)
     {
-        $gwID = (int)$gatewayID;
-
         return "<?php
-/* RemoteSync Receiver */
+/* RemoteSync Receiver - Shared Script */
 \$data = \$_IPS['DATA'];
-IPS_LogMessage('RemoteSync_RX', 'Start. Payload size: ' . strlen(\$data));
+\$input = json_decode(\$data, true);
 
-\$batch = json_decode(\$data, true);
-\$gatewayID = $gwID;
-\$rootID = IPS_GetParent(IPS_GetParent(\$_IPS['SELF'])); 
+// Extract Target Root and Batch
+\$targetRoot = \$input['TargetID'] ?? 0;
+\$batch = \$input['Batch'] ?? [];
+\$gatewayID = $gatewayID;
 
-if (!is_array(\$batch)) {
-    IPS_LogMessage('RemoteSync_RX', 'Error: Invalid JSON Batch');
-    return;
-}
-
-IPS_LogMessage('RemoteSync_RX', 'Processing ' . count(\$batch) . ' items.');
+if (!is_array(\$batch) || \$targetRoot == 0) return;
 
 foreach (\$batch as \$item) {
-    try {
-        \$localID = \$item['LocalID'];
-        \$serverKey = \$item['Key'];
-        \$safeIdent = \"Rem_\" . \$localID;
-        \$refString = \"RS_REF:\" . \$serverKey . \":\" . \$localID;
-        
-        // 1. FIND
-        \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
-        
-        // Migration Fallback
-        if (!\$remoteID) {
-            \$currentParent = \$rootID;
-            \$foundPath = true;
-            foreach (\$item['Path'] as \$nodeName) {
-                \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (!\$childID) { \$foundPath = false; break; }
-                \$currentParent = \$childID;
-            }
-            if (\$foundPath && \$currentParent != \$rootID) {
-                \$remoteID = \$currentParent;
-                IPS_SetIdent(\$remoteID, \$safeIdent);
-                IPS_LogMessage('RemoteSync_RX', 'Migrated ' . \$nodeName);
-            }
+    \$localID = \$item['LocalID'];
+    
+    // DELETE
+    if (!empty(\$item['Delete'])) {
+        \$oldID = @IPS_GetObjectIDByIdent((string)\$localID, \$targetRoot);
+        if (\$oldID) {
+            \$children = IPS_GetChildrenIDs(\$oldID);
+            foreach(\$children as \$c) IPS_DeleteObject(\$c);
+            IPS_DeleteObject(\$oldID);
+            IPS_LogMessage('RemoteSync_RX', 'Deleted ID ' . \$oldID);
         }
+        continue;
+    }
 
-        // 2. DELETE
-        if (!empty(\$item['Delete'])) {
-            if (\$remoteID > 0) {
-                \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
-                if (\$info === \$refString) {
-                    \$children = IPS_GetChildrenIDs(\$remoteID);
-                    foreach(\$children as \$c) IPS_DeleteObject(\$c);
-                    IPS_DeleteObject(\$remoteID);
-                    IPS_LogMessage('RemoteSync_RX', 'Deleted ID ' . \$remoteID);
-                }
-            }
-            continue;
+    // FIND / CREATE
+    \$remoteID = @IPS_GetObjectIDByIdent((string)\$localID, \$targetRoot);
+    
+    if (!\$remoteID) {
+        // Migration Check (Path)
+        \$currentParent = \$targetRoot;
+        \$foundPath = true;
+        foreach (\$item['Path'] as \$nodeName) {
+            \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
+            if (!\$childID) { \$foundPath = false; break; }
+            \$currentParent = \$childID;
         }
-
-        // 3. CREATE
-        if (!\$remoteID) {
-            \$currentParent = \$rootID;
-            foreach (\$item['Path'] as \$index => \$nodeName) {
-                \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (!\$childID) {
-                    if (\$index === count(\$item['Path']) - 1) {
-                        \$childID = IPS_CreateVariable(\$item['Type']);
-                        IPS_SetIdent(\$childID, \$safeIdent);
-                    } else {
-                        \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
-                    }
-                    IPS_SetParent(\$childID, \$currentParent);
-                    IPS_SetName(\$childID, \$nodeName);
-                }
-                \$currentParent = \$childID;
-            }
+        
+        if (\$foundPath && \$currentParent != \$targetRoot) {
             \$remoteID = \$currentParent;
-            IPS_LogMessage('RemoteSync_RX', 'Created New ID: ' . \$remoteID);
+            IPS_SetIdent(\$remoteID, (string)\$localID);
+            IPS_LogMessage('RemoteSync_RX', 'Migrated Variable ' . \$nodeName . ' to Ident ' . \$localID);
         }
+    }
 
-        // 4. UPDATE
-        if (\$remoteID) {
-            IPS_SetInfo(\$remoteID, \$refString);
-            SetValue(\$remoteID, \$item['Value']);
-            
-            if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
+    if (!\$remoteID) {
+        // Create New
+        \$currentParent = \$targetRoot;
+        foreach (\$item['Path'] as \$index => \$nodeName) {
+            \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
+            if (!\$childID) {
+                if (\$index === count(\$item['Path']) - 1) {
+                    \$childID = IPS_CreateVariable(\$item['Type']);
+                    IPS_SetIdent(\$childID, (string)\$localID);
+                } else {
+                    \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
+                }
+                IPS_SetParent(\$childID, \$currentParent);
+                IPS_SetName(\$childID, \$nodeName);
+            }
+            \$currentParent = \$childID;
+        }
+        \$remoteID = \$currentParent;
+    }
+
+    // UPDATE
+    if (\$remoteID) {
+        SetValue(\$remoteID, \$item['Value']);
+        
+        if (!empty(\$item['Profile'])) {
+             if (IPS_VariableProfileExists(\$item['Profile'])) {
                  IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
-            }
-
-            \$children = IPS_GetChildrenIDs(\$remoteID);
-            foreach (\$children as \$childID) {
-                \$obj = IPS_GetObject(\$childID);
-                if (\$obj['ObjectType'] == 3) IPS_DeleteScript(\$childID, true); 
-            }
-
-            if (!empty(\$item['Action'])) {
-                IPS_SetVariableCustomAction(\$remoteID, \$gatewayID);
-            } else {
-                IPS_SetVariableCustomAction(\$remoteID, 0);
-            }
+             }
         }
-    } catch (Exception \$e) {
-        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
+
+        if (!empty(\$item['Action'])) {
+            IPS_SetVariableCustomAction(\$remoteID, \$gatewayID);
+        } else {
+            IPS_SetVariableCustomAction(\$remoteID, 0);
+        }
     }
 }
 ?>";
@@ -469,27 +425,23 @@ foreach (\$batch as \$item) {
         $locKey = str_replace("'", "\\'", $this->config['LocalServerKey']);
 
         return "<?php
-/* RemoteSync Gateway */
+/* RemoteSync Gateway - Shared Script */
 \$remoteVarID = \$_IPS['VARIABLE'];
-\$info = IPS_GetObject(\$remoteVarID)['ObjectInfo']; 
-
-\$parts = explode(':', \$info);
-if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') die('Invalid Info');
-
-\$targetKey = \$parts[1];
-\$targetID = (int)\$parts[2];
+\$targetID = (int)IPS_GetObject(\$remoteVarID)['ObjectIdent'];
 
 \$secID = $remSecID;
+\$key = '$locKey';
 
+if (\$targetID == 0) die('Error: Ident invalid');
 if (!function_exists('SEC_GetSecret')) die('SEC Module missing');
 
-\$json = SEC_GetSecret(\$secID, \$targetKey);
+\$json = SEC_GetSecret(\$secID, \$key);
 \$creds = json_decode(\$json, true);
 \$url = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
 \$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
 \$pw = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
 
-if (!\$url) die('Invalid Config');
+if (!\$url) die('Invalid config');
 
 \$connUrl = 'https://'.urlencode(\$user).':'.urlencode(\$pw).'@'.\$url.'/api/';
 
@@ -544,6 +496,7 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
         }
 
         $values = [];
+        
         if ($OverrideColumn !== null) {
              $cachedIDs = json_decode($this->ReadAttributeString('_SyncListCache'), true);
              if (!is_array($cachedIDs)) $cachedIDs = []; 
@@ -593,6 +546,7 @@ SetValue(\$_IPS['VARIABLE'], \$_IPS['VALUE']);
                 'LocalServerKey'        => @$this->ReadPropertyString('LocalServerKey'),
                 'LocalRootID'           => @$this->ReadPropertyInteger('LocalRootID'),
                 'RemoteRootID'          => @$this->ReadPropertyInteger('RemoteRootID'),
+                'RemoteScriptRootID'    => @$this->ReadPropertyInteger('RemoteScriptRootID'),
                 'SyncListRaw'           => @$this->ReadPropertyString('SyncList')
             ];
             if (!is_string($this->config['SyncListRaw'])) return false;
