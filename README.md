@@ -1,5 +1,3 @@
-Here is the updated and enhanced documentation for the RemoteSync module. It incorporates the central script architecture, batch UI tools, and advanced stability features while maintaining a focus on the current functional principle.
-
 Module Documentation: IP-Symcon RemoteSync
 1. Overview
 
