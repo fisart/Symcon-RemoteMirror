@@ -3,6 +3,7 @@
         { "type": "Label", "caption": "Remote Mirror Configuration" },
         { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode" },
         { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
+        { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
 
         { "type": "Label", "caption": "Authentication (Local -> Remote)" },
         { "type": "Label", "caption": "Select your local Secrets Manager instance" },

@@ -41,6 +41,11 @@ class RemoteSync extends IPSModule
         
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
+
+        $this->RegisterPropertyBoolean('DebugMode', false);
+        $this->RegisterPropertyBoolean('AutoCreate', true);
+        $this->RegisterPropertyBoolean('ReplicateProfiles', true); // NEW
+
     }
 
     // --- FORM & UI ---
@@ -315,16 +320,42 @@ class RemoteSync extends IPSModule
 
             // Extract values and CLEAR attribute immediately
             $batch = array_values($buffer);
+
+            // Build profile definitions (optional)
+            $profiles = [];
+            if (!empty($this->config['ReplicateProfiles'])) {
+                foreach ($batch as $item) {
+                    if (empty($item['Profile'])) {
+                        continue;
+                    }
+                    $profileName = $item['Profile'];
+                    if (isset($profiles[$profileName])) {
+                        continue;
+                    }
+                    // Only collect if the profile exists locally
+                    if (@IPS_VariableProfileExists($profileName)) {
+                        $def = @IPS_GetVariableProfile($profileName);
+                        if (is_array($def)) {
+                            // Send raw definition as returned by IPS_GetVariableProfile
+                            $profiles[$profileName] = $def;
+                        }
+                    }
+                }
+            }
+
+            // Clear buffer attribute now that we have the batch
             $this->WriteAttributeString('_BatchBuffer', '[]'); 
 
             $this->LogDebug("Sending batch of " . count($batch) . " items...");
-            
-            // New Packet Structure
+
+            // New Packet Structure with Profiles
             $packet = [
                 'TargetID'   => $this->config['RemoteRootID'],
                 'Batch'      => $batch,
-                'AutoCreate' => (bool)$this->config['AutoCreate']
+                'AutoCreate' => (bool)$this->config['AutoCreate'],
+                'Profiles'   => $profiles
             ];
+
             $json = json_encode($packet);
             
             if ($json === false) throw new Exception("JSON Encode Failed");
@@ -371,8 +402,65 @@ if (!is_array(\$packet)) {
 \$autoCreate = !empty(\$packet['AutoCreate']); 
 \$gatewayID  = $gwID;
 
+// Optional profile definitions from local
+\$profiles = \$packet['Profiles'] ?? [];
+
 if (!is_array(\$batch) || \$rootID == 0) {
     return;
+}
+
+// --- Create missing profiles (if provided) ---
+if (is_array(\$profiles)) {
+    foreach (\$profiles as \$pName => \$pDef) {
+        if (!is_string(\$pName) || \$pName === '') {
+            continue;
+        }
+        if (IPS_VariableProfileExists(\$pName) || !is_array(\$pDef)) {
+            continue;
+        }
+
+        // IPS_GetVariableProfile() structure (local side) typically:
+        // ProfileName, ProfileType, Icon, Prefix, Suffix,
+        // MinValue, MaxValue, StepSize, Digits, Associations[]
+        \$type = \$pDef['ProfileType'] ?? 0;
+
+        @IPS_CreateVariableProfile(\$pName, \$type);
+
+        if (isset(\$pDef['Icon'])) {
+            @IPS_SetVariableProfileIcon(\$pName, \$pDef['Icon']);
+        }
+
+        \$prefix = \$pDef['Prefix'] ?? '';
+        \$suffix = \$pDef['Suffix'] ?? '';
+        @IPS_SetVariableProfileText(\$pName, \$prefix, \$suffix);
+
+        \$min  = \$pDef['MinValue'] ?? 0;
+        \$max  = \$pDef['MaxValue'] ?? 0;
+        \$step = \$pDef['StepSize'] ?? 0;
+        @IPS_SetVariableProfileValues(\$pName, \$min, \$max, \$step);
+
+        if (isset(\$pDef['Digits'])) {
+            @IPS_SetVariableProfileDigits(\$pName, \$pDef['Digits']);
+        }
+
+        if (!empty(\$pDef['Associations']) && is_array(\$pDef['Associations'])) {
+            foreach (\$pDef['Associations'] as \$assoc) {
+                if (!is_array(\$assoc)) {
+                    continue;
+                }
+                if (!array_key_exists('Value', \$assoc)) {
+                    continue;
+                }
+                \$value = \$assoc['Value'];
+                \$name  = \$assoc['Name']  ?? '';
+                \$icon  = \$assoc['Icon']  ?? '';
+                \$color = \$assoc['Color'] ?? 0;
+                @IPS_SetVariableProfileAssociation(\$pName, \$value, \$name, \$icon, \$color);
+            }
+        }
+
+        IPS_LogMessage('RemoteSync_RX', 'Created profile ' . \$pName);
+    }
 }
 
 // --- HELPER FOR TYPE-SAFE DELETION ---
@@ -490,6 +578,7 @@ foreach (\$batch as \$item) {
 }
 ?>";
 }
+
 
 private function GenerateGatewayCode()
 {
@@ -670,6 +759,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
             $this->config = [
                 'DebugMode'             => @$this->ReadPropertyBoolean('DebugMode'),
                 'AutoCreate'            => @$this->ReadPropertyBoolean('AutoCreate'),
+                'ReplicateProfiles'     => @$this->ReadPropertyBoolean('ReplicateProfiles'), // NEW
                 'LocalPasswordModuleID' => @$this->ReadPropertyInteger('LocalPasswordModuleID'),
                 'RemoteServerKey'       => @$this->ReadPropertyString('RemoteServerKey'),
                 'RemotePasswordModuleID'=> @$this->ReadPropertyInteger('RemotePasswordModuleID'),
@@ -679,6 +769,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
                 'RemoteScriptRootID'    => @$this->ReadPropertyInteger('RemoteScriptRootID'),
                 'SyncListRaw'           => @$this->ReadPropertyString('SyncList')
             ];
+
             if (!is_string($this->config['SyncListRaw'])) return false;
             $this->config['SyncList'] = json_decode($this->config['SyncListRaw'], true);
             if (!is_array($this->config['SyncList'])) $this->config['SyncList'] = [];

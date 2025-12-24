@@ -23,7 +23,9 @@
             "Del Remote": "Remote Löschen",
             "Connecting to remote...": "Verbinde zu Remote...",
             "Remote Variable created:": "Remote Variable erstellt:",
+            "Replicate Variable Profiles (local → remote)": "Variablenprofile replizieren (lokal → remote)",
             "Value pushed:": "Wert übertragen:"
+            
         },
         "en": {
             "Remote Mirror Configuration": "Remote Mirror Configuration",
@@ -48,6 +50,7 @@
             "Del Remote": "Del Remote",
             "Connecting to remote...": "Connecting to remote...",
             "Remote Variable created:": "Remote Variable created:",
+            "Replicate Variable Profiles (local → remote)": "Replicate Variable Profiles (local → remote)",
             "Value pushed:": "Value pushed:"
         }
     }
