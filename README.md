@@ -24,7 +24,7 @@ Das Modul spiegelt eine lokale Variablen-Struktur auf ein entferntes (Remote) Sy
 ---
 
 ## 2. Voraussetzungen
-1.  **Secrets Manager (SEC):** Muss auf dem lokalen System installiert sein, um die Zugangsdaten zum Remote-Server zu verwalten.
+1.  **Secrets Manager (SEC):** Muss auf dem lokalen System installiert sein, um die Zugangsdaten zum Remote-Server zu verwalten. Das Modul ist im Symcon Modul Store unter "Password Vault" zu finden
 2.  **Remote-Zugriff:** Der Remote-Server muss über seine JSON-RPC API erreichbar sein.
 3.  **Secrets Manager (Remote):** Falls die Rücksteuerung genutzt werden soll, muss auch auf dem Remote-System ein Secrets-Modul mit den Zugangsdaten des lokalen Systems vorhanden sein.
 
