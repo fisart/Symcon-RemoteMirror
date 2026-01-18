@@ -492,6 +492,7 @@ class RemoteSync extends IPSModule
         }
         return 0;
     }
+
     private function AddToBuffer($localID)
     {
         $syncList = json_decode($this->ReadPropertyString("SyncList"), true);
@@ -500,24 +501,32 @@ class RemoteSync extends IPSModule
         $buffer = json_decode($rawBuffer, true);
         if (!is_array($buffer)) $buffer = [];
 
-        // Wir gehen alle Einträge der SyncList durch, um alle Ziele dieser Variable zu finden
+        if (!is_array($syncList) || !is_array($roots)) return;
+
         foreach ($syncList as $item) {
             if ($item['ObjectID'] == $localID && !empty($item['Active'])) {
                 $folderName = $item['Folder'];
 
-                // Den passenden lokalen Root-Anker für diesen Folder finden (für Pfadberechnung)
+                // Suche das passende Mapping in Step 2
+                $foundMapping = false;
                 $localRootID = 0;
+                $remoteRootID = 0;
+
                 foreach ($roots as $root) {
-                    if ($root['TargetFolder'] === $folderName) {
-                        $localRootID = (int)$root['LocalRootID'];
-                        break;
+                    // Die Variable muss zum Folder gehören UND unter der LocalRootID liegen
+                    if (($root['TargetFolder'] ?? '') === $folderName) {
+                        if ($this->IsChildOf((int)$localID, (int)$root['LocalRootID'])) {
+                            $localRootID = (int)$root['LocalRootID'];
+                            $remoteRootID = (int)$root['RemoteRootID'];
+                            $foundMapping = true;
+                            break;
+                        }
                     }
                 }
 
-                if (!IPS_ObjectExists($localID)) continue;
-                $var = IPS_GetVariable($localID);
+                if (!$foundMapping || !IPS_ObjectExists($localID)) continue;
 
-                // PAYLOAD GENERIERUNG: Exakt identisch zu Ihrem Original (Zeile 263-286)
+                $var = IPS_GetVariable($localID);
                 $payload = [
                     'LocalID' => $localID,
                     'Value'   => GetValue($localID),
@@ -525,12 +534,12 @@ class RemoteSync extends IPSModule
                     'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
                     'Name'    => IPS_GetName($localID),
                     'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
-                    'Key'     => $this->ReadPropertyString("LocalServerKey"), // Globaler Key
+                    'Key'     => $this->ReadPropertyString("LocalServerKey"),
                     'Action'  => !empty($item['Action']),
                     'Delete'  => !empty($item['Delete'])
                 ];
 
-                // Pfad-Berechnung relativ zum folder-spezifischen Root (Ihre Original-Logik)
+                // Pfad relativ zur gefundenen LocalRootID berechnen
                 $pathStack = [];
                 $currentID = $localID;
                 while ($currentID != $localRootID && $currentID > 0) {
@@ -539,8 +548,9 @@ class RemoteSync extends IPSModule
                 }
                 $payload['Path'] = $pathStack;
 
-                // Im gruppierten Buffer unter dem Folder-Namen ablegen
-                $buffer[$folderName][$localID] = $payload;
+                // Buffer-Key aus Folder und RemoteRootID kombinieren
+                $bufferKey = $folderName . ':' . $remoteRootID;
+                $buffer[$bufferKey][$localID] = $payload;
             }
         }
 
@@ -548,9 +558,19 @@ class RemoteSync extends IPSModule
         $this->SetTimerInterval('BufferTimer', 200);
     }
 
+    private function IsChildOf(int $objectID, int $parentID): bool
+    {
+        if ($objectID === $parentID) return true;
+        while ($objectID > 0) {
+            $objectID = IPS_GetParent($objectID);
+            if ($objectID === $parentID) return true;
+        }
+        return false;
+    }
+
+
     public function FlushBuffer()
     {
-        // Sperre prüfen (Ihre Original-Logik)
         if ($this->ReadAttributeBoolean('_IsSending')) return;
         $this->SetTimerInterval('BufferTimer', 0);
 
@@ -561,17 +581,17 @@ class RemoteSync extends IPSModule
         $this->WriteAttributeBoolean('_IsSending', true);
 
         try {
-            foreach ($fullBuffer as $folderName => $variables) {
-                // 1. Ziel-Konfiguration für diesen Folder holen
-                $target = $this->GetTargetConfig($folderName);
-                if (!$target) continue;
+            foreach ($fullBuffer as $bufferKey => $variables) {
+                $parts = explode(':', $bufferKey);
+                if (count($parts) < 2) continue;
 
-                // 2. Verbindung zu DIESEM Ziel aufbauen
-                if (!$this->InitConnectionForFolder($target)) continue;
+                $folderName = $parts[0];
+                $remoteRootID = (int)$parts[1];
+
+                $target = $this->GetTargetConfig($folderName);
+                if (!$target || !$this->InitConnectionForFolder($target)) continue;
 
                 $batch = array_values($variables);
-
-                // 3. Profile sammeln (Ihre Original-Logik Zeile 344 ff.)
                 $profiles = [];
                 if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                     foreach ($batch as $item) {
@@ -583,23 +603,18 @@ class RemoteSync extends IPSModule
                     }
                 }
 
-                // 4. Paket schnüren (Ihre Original-Struktur)
                 $packet = [
-                    'TargetID'   => (int)$target['RemoteRootID'],
+                    'TargetID'   => $remoteRootID, // Nutzt die ID aus dem Mapping (Step 2)
                     'Batch'      => $batch,
                     'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
                     'Profiles'   => $profiles
                 ];
 
-                // 5. Empfänger-Script auf dem Remote-System finden
                 $receiverID = $this->FindRemoteScriptID((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
-
                 if ($receiverID > 0) {
                     $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
                 }
             }
-
-            // Buffer erst leeren, wenn alle Ziele bedient wurden
             $this->WriteAttributeString('_BatchBuffer', '[]');
         } catch (Exception $e) {
             $this->LogDebug("Flush Error: " . $e->getMessage());
