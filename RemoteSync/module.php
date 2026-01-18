@@ -323,8 +323,14 @@ class RemoteSync extends IPSModule
 
     // --- RUNTIME ---
 
+
     public function ApplyChanges()
     {
+        // BEST PRACTICE: Warten bis der Kernel bereit ist, um "InstanceInterface not available" zu verhindern
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
+            return;
+        }
+
         parent::ApplyChanges();
 
         $this->rpcClient = null;
@@ -333,8 +339,17 @@ class RemoteSync extends IPSModule
         $this->WriteAttributeBoolean('_IsSending', false);
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
-        // NEU: RAM-Cache für UI initialisieren (Blueprint)
-        $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
+        // ÄNDERUNG: Wir nutzen das Attribut als primäre Quelle für die Auswahl, 
+        // da SaveSelections dieses zukünftig befüllt, ohne die Instanz neu zu starten.
+        $syncListRaw = $this->ReadAttributeString("SyncListCache");
+
+        // Initial-Fallback: Falls das Attribut noch leer ist (Neuinstallation), aus Property laden
+        if ($syncListRaw === "[]" || $syncListRaw === "") {
+            $syncListRaw = $this->ReadPropertyString("SyncList");
+            $this->WriteAttributeString("SyncListCache", $syncListRaw);
+        }
+
+        $syncList = json_decode($syncListRaw, true);
 
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
@@ -343,8 +358,7 @@ class RemoteSync extends IPSModule
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) $this->UnregisterMessage($senderID, VM_UPDATE);
 
-        // NEU: Variablen aus der konsolidierten Manager-Liste registrieren
-        $syncList = json_decode($this->ReadPropertyString("SyncList"), true);
+        // Variablen aus der konsolidierten Manager-Liste registrieren (jetzt basierend auf Attribut)
         $count = 0;
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
@@ -364,6 +378,7 @@ class RemoteSync extends IPSModule
             $this->LogDebug("ApplyChanges: Registered $count variables across all targets.");
         }
     }
+
     public function RequestAction($Ident, $Value)
     {
         switch ($Ident) {
@@ -405,11 +420,19 @@ class RemoteSync extends IPSModule
 
     public function SaveSelections()
     {
-        // Den Stand aus dem RAM nehmen und permanent speichern
-        $data = $this->ReadAttributeString("SyncListCache");
-        IPS_SetProperty($this->InstanceID, "SyncList", $data);
-        IPS_ApplyChanges($this->InstanceID);
+        // BEST PRACTICE: Wir verzichten auf IPS_SetProperty und IPS_ApplyChanges,
+        // um die Instanz nicht unnötig neu zu starten und die Konfiguration 
+        // nicht automatisiert zu überschreiben.
+
+        // Da die Auswahl bereits durch RequestAction/ToggleAll im Attribut 
+        // 'SyncListCache' liegt, müssen wir lediglich die Nachrichten-Registrierung 
+        // aktualisieren. Dies erreichen wir durch einen manuellen Aufruf von ApplyChanges.
+        $this->ApplyChanges();
+
+        echo "Selection saved and active.";
     }
+
+
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
         $this->LogDebug("Sink: Triggered by ID $SenderID");
@@ -505,7 +528,8 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
-        $syncList = json_decode($this->ReadPropertyString("SyncList"), true);
+        // ÄNDERUNG: Nutzt jetzt das Attribut statt der Property (Best Practice)
+        $syncList = json_decode($this->ReadAttributeString("SyncListCache"), true);
         $roots = json_decode($this->ReadPropertyString("Roots"), true);
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
         $buffer = json_decode($rawBuffer, true);
@@ -567,6 +591,7 @@ class RemoteSync extends IPSModule
         $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
         $this->SetTimerInterval('BufferTimer', 200);
     }
+
 
     private function IsChildOf(int $objectID, int $parentID): bool
     {
@@ -1029,7 +1054,8 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
                 'LocalRootID'           => @$this->ReadPropertyInteger('LocalRootID'),
                 'RemoteRootID'          => @$this->ReadPropertyInteger('RemoteRootID'),
                 'RemoteScriptRootID'    => @$this->ReadPropertyInteger('RemoteScriptRootID'),
-                'SyncListRaw'           => @$this->ReadPropertyString('SyncList')
+                // ÄNDERUNG: Nutzt jetzt das Attribut statt der Property (Best Practice)
+                'SyncListRaw'           => $this->ReadAttributeString('SyncListCache')
             ];
 
             if (!is_string($this->config['SyncListRaw'])) return false;
@@ -1040,6 +1066,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
             return false;
         }
     }
+
 
     private function InitConnection()
     {
