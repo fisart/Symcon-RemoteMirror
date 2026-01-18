@@ -1,112 +1,102 @@
-Diese Dokumentation bietet eine detaillierte technische und funktionale Beschreibung des IP-Symcon Moduls **RemoteSync**.
+# Dokumentation: RemoteSync (RS) - Hochperformante System-Föderation
 
----
+## 1. Einführung & Problemstellung
+In komplexen IP-Symcon-Umgebungen mit mehreren Standorten (z. B. Haupthaus, Gartenhaus, Büro) stellt die Synchronisation von Daten eine Herausforderung dar. Klassische Lösungen leiden oft unter:
 
-# Dokumentation: RemoteSync (RS)
+*   **Hoher Netzwerklast:** Viele Einzel-RPC-Aufrufe verzögern das System.
+*   **Wartungsaufwand:** Manuelles Anlegen von Variablen und Profilen auf Zielsystemen ist fehleranfällig.
+*   **Fehlende Interaktion:** Reine Visualisierung von Werten reicht meist nicht aus; eine Steuerung zurück zum Quellsystem ist oft komplex zu realisieren.
 
-**Version:** 1.2  
-**Autor:** Artur Fischer  
-**Präfix:** `RS`  
-**Ziel:** Hochperformante, bidirektionale Synchronisierung von Variablen-Strukturen zwischen entfernten IP-Symcon Systemen.
+## 2. Die Lösung: Das RemoteSync-Prinzip
+RemoteSync fungiert als **intelligente Brücke**, die nicht nur Daten überträgt, sondern die Logik zur Steuerung direkt mitliefert ("Injected Gateway").
 
----
+*   **Batch-Processing:** Änderungen werden gesammelt und nach einer Ruhepause (200ms) in einem einzigen verschlüsselten Paket übertragen.
+*   **Profil-Replikation:** Lokale Variablenprofile werden automatisch auf dem Zielsystem erstellt.
+*   **Unified Dashboard:** Ermöglicht die Zusammenführung vieler Quell-Systeme in einer einzigen Benutzeroberfläche (Symcon UI / IPSView), ohne zwischen Servern wechseln zu müssen.
 
-## 1. Funktionsbeschreibung
-Das Modul spiegelt eine lokale Variablen-Struktur auf ein entferntes (Remote) Symcon-System. Im Gegensatz zu einfachen RPC-Lösungen nutzt RemoteSync eine **Batch-Verarbeitung**, um die Netzwerklast zu minimieren und die Konsistenz zu erhöhen.
+## 3. Datenfluss & Architektur
 
-### Kern-Features:
-*   **Batch-Processing:** Änderungen werden gesammelt und nach einem Debounce-Timer (200ms) in einem einzigen Paket übertragen.
-*   **Automatische Struktur-Replikation:** Kategorien und Instanzen werden am Zielsystem automatisch nachgebaut.
-*   **Profil-Replikation:** Lokale Variablenprofile (inkl. Icons, Farben und Assoziationen) werden auf dem Remote-System automatisch erstellt.
-*   **Rücksteuerung (Reverse Control):** Remote-Variablen können Befehle (RequestAction) zurück an das lokale System senden.
-*   **Sicherheits-Integration:** Nutzt das externe `Secrets Manager (SEC)` Modul zur sicheren Handhabung von Zugangsdaten.
+### A. Synchronisations-Ablauf (Lokal -> Remote)
+Geänderte Variablen werden lokal gepuffert und als Batch an das injizierte Empfänger-Skript gesendet.
 
----
+```mermaid
+graph TD
+    subgraph "LOKALES SYSTEM (Quelle)"
+        A[Variable Änderung] -->|Event| B[Batch-Buffer]
+        B -->|Debounce 200ms| C[RPC Batch Send]
+        L[Local Action Handler] <--- M[Gateway Request]
+    end
 
-## 2. Voraussetzungen
-1.  **Secrets Manager (SEC):** Muss auf dem lokalen System installiert sein, um die Zugangsdaten zum Remote-Server zu verwalten. Das Modul ist im Symcon Modul Store unter "Password Vault" zu finden
-2.  **Remote-Zugriff:** Der Remote-Server muss über seine JSON-RPC API erreichbar sein.
-3.  **Secrets Manager (Remote):** Falls die Rücksteuerung genutzt werden soll, muss auch auf dem Remote-System ein Secrets-Modul mit den Zugangsdaten des lokalen Systems vorhanden sein.
+    subgraph "REMOTE SYSTEM (Ziel)"
+        C --> D[Receiver Script]
+        D -->|Update/Create| E[Remote Variablen]
+        D -->|Sync| F[Profile]
+        E -->|Bedienung| G[User Aktion]
+        G --> H[Gateway Script]
+        H -->|RPC Callback| M
+    end
+```
 
----
+### B. Das "Unified Dashboard" (N:1 Föderation)
+Dies ist der Kernvorteil gegenüber Standardlösungen: Mehrere Standorte werden in einer zentralen Steuereinheit zusammengefasst.
 
-## 3. Installation & Ersteinrichtung
+```mermaid
+graph RL
+    subgraph "Zentrale (Master UI)"
+        MainUI[Zentrale Visualisierung<br/>IPSView / TileVisu]
+        Var1[Spiegel Haus A]
+        Var2[Spiegel Haus B]
+        Var3[Spiegel Büro]
+        MainUI --> Var1
+        MainUI --> Var2
+        MainUI --> Var3
+    end
 
-1.  **Modul hinzufügen:** Das Repository in IP-Symcon hinzufügen und eine **RemoteSync** Instanz erstellen.
-2.  **Authentifizierung:** 
-    *   Wähle unter "Local Secrets Module" deine SEC-Instanz aus.
-    *   Klicke auf "Übernehmen" (Apply), um die Liste der verfügbaren Server-Schlüssel zu laden.
-    *   Wähle den Ziel-Server aus.
-3.  **Anker setzen:**
-    *   **Local Root Object:** Wähle die Kategorie/Instanz, deren Inhalt gespiegelt werden soll.
-    *   **Remote Data Target ID:** Gib die ID einer Kategorie auf dem Remote-Server an, in der die Daten landen sollen.
-    *   **Remote Script Home ID:** Gib die ID einer Kategorie auf dem Remote-Server an, in der die Steuerungs-Scripte abgelegt werden sollen (Shared Folder).
-4.  **Remote-Setup:** Klicke auf den Button **"Install/Update Remote Scripts"**. Dies installiert den *Receiver* und das *Gateway* auf dem Zielsystem.
-5.  **Variablen wählen:** Markiere in der Liste "Objects to Sync" die gewünschten Variablen und aktiviere sie.
+    subgraph "Standort A"
+        S1[Server A] -->|Sync| Var1
+        Var1 -->|Action| S1
+    end
 
----
+    subgraph "Standort B"
+        S2[Server B] -->|Sync| Var2
+        Var2 -->|Action| S2
+    end
 
-## 4. Parameterisierung (Konfiguration)
+    subgraph "Büro"
+        S3[Server C] -->|Sync| Var3
+        Var3 -->|Action| S3
+    end
+```
 
-### Sektion: Remote Mirror Configuration
-*   **Debug Mode:** Aktiviert detaillierte Protokolle im Symcon-Log (Meldungsfenster).
-*   **Use Auto-Create:** Wenn aktiv, werden fehlende Kategorien/Variablen auf dem Remote-System automatisch erstellt.
-*   **Replicate Variable Profiles:** Synchronisiert die Definitionen der Variablenprofile (Min/Max, Assoziationen etc.) von Lokal nach Remote.
+## 4. Parametrisierung
 
-### Sektion: Authentication (Local -> Remote)
-*   **Local Secrets Module:** Auswahl der Instanz, die die API-Credentials hält.
-*   **Target Remote Server (Key):** Der Name des Schlüssels im SEC-Modul für den Zielserver.
+### Schritt 1: Define Remote Targets (Infrastruktur)
+Verwaltung der Server-Verbindungen.
+*   **Remote Server Key:** Zugangsdaten aus dem Secrets Manager.
+*   **Remote Script Root ID:** Kategorie auf dem Zielsystem für die technischen Hilfsskripte.
 
-### Sektion: Reverse Control (Remote -> Local)
-*   **Remote Secrets Instance ID:** Die ID der SEC-Instanz auf dem *entfernten* System.
-*   **Local Server Key:** Der Name des Schlüssels auf dem *entfernten* System, der zurück auf das lokale System zeigt.
+### Schritt 2: Map Local Roots to Folders (Logik)
+Verknüpfung der lokalen Datenbereiche mit den Ziel-Servern.
+*   **Local Object (Source):** Die lokale Quell-Kategorie (z. B. "Erdgeschoss").
+*   **Remote Root ID:** Die Ziel-Kategorie auf dem entfernten Server.
 
-### Sektion: Mirror Anchors & Setup
-*   **Local Root Object:** Der Ursprung der lokalen Datenquelle.
-*   **Remote Data Target ID:** Ziel-Ordner auf dem Remote-System.
-*   **Remote Script Home ID:** Speicherort für die zwei technischen Hilfsscripte auf dem Remote-System.
+### Schritt 3: Individual Selection (Auswahl)
+Feingranulare Auswahl der Variablen innerhalb der definierten Mappings. Die Gruppierung erfolgt hier nach den lokalen Quell-Objekten aus Schritt 2.
+*   **Sync:** Variable wird aktiv gespiegelt.
+*   **R-Action:** Aktiviert die Rücksteuerung (Variable wird auf dem Zielsystem schaltbar).
+*   **Del Rem.:** Markiert das Objekt zur Löschung auf dem Remote-System.
 
-### Sektion: Selection (Batch Tools)
-Über die Buttons **All / None** können die Spalten der Sync-Liste massenweise bearbeitet werden:
-*   **Sync:** Variable wird überwacht und übertragen.
-*   **Action (R-Action):** Aktiviert die Rücksteuerung. Die Remote-Variable erhält ein Aktionsscript, das Befehle zurückschickt.
-*   **Delete (Del Remote):** Markiert die Variable zur Löschung auf dem Remote-Server beim nächsten Sync.
+## 5. Vergleich: RemoteSync vs. Natives IP-Symcon Mirroring
 
----
+| Feature | Natives IP-Symcon Mirroring | RemoteSync Modul |
+| :--- | :--- | :--- |
+| **Primärziel** | **Ausfallsicherheit (HA):** Ersatz für defekte Hardware. | **Daten-Föderation:** Vernetzung unabhängiger Systeme. |
+| **Umfang** | 1:1 Kopie des gesamten Servers. | Gezielte Auswahl einzelner Variablen/Kategorien. |
+| **Richtung** | Unidirektional (Server -> Mirror). | Bidirektional (Werte hin, Befehle zurück). |
+| **UI-Szenario** | Ein System ersetzt ein anderes. | **Unified UI:** Viele Systeme in einer Oberfläche. |
+| **Kosten** | Kostenpflichtige Extension. | Kostenloses PHP-Modul. |
 
-## 5. Funktionsweise der Synchronisation
-
-### Lokale Logik (`module.php`)
-1.  **MessageSink:** Das Modul registriert sich auf `VM_UPDATE` Events aller aktivierten Variablen.
-2.  **Buffering:** Bei Änderung wird die Variable in ein internes Array (`_BatchBuffer`) geschrieben. Der `BufferTimer` startet neu.
-3.  **Flush:** Nach Ablauf des Timers (200ms Ruhe) wird der gesamte Buffer via JSON-RPC an das Remote-Script `RemoteSync_Receiver` gesendet.
-
-### Remote Logik (Injected Scripts)
-1.  **Receiver Script:**
-    *   Empfängt das Batch-Paket.
-    *   Prüft, ob Profile existieren, und legt sie ggf. an.
-    *   Identifiziert Objekte anhand eines eindeutigen Idents (`Rem_[LocalID]`) und verknüpft sie zusätzlich über das Feld "Info" (`RS_REF:ServerKey:LocalID`).
-    *   Setzt Werte und verknüpft bei Bedarf das Gateway-Script als Aktionsscript.
-2.  **Gateway Script:**
-    *   Wird ausgelöst, wenn ein User am Remote-System eine Variable schaltet.
-    *   Extrahiert die Ziel-ID und den Server-Key aus dem Info-Feld.
-    *   Ruft via `RequestAction` (oder Fallback `SetValue`) die Funktion auf dem lokalen Ursprungssystem auf.
-
----
-
-## 6. PHP-Befehlsreferenz
-
-Obwohl das Modul primär über die Konsole bedient wird, stehen folgende Funktionen zur Verfügung:
-
-| Funktion | Beschreibung |
-| :--- | :--- |
-| `RS_ProcessSync(int $InstanzID)` | Startet manuell einen vollständigen Abgleich aller aktiven Variablen. |
-| `RS_InstallRemoteScripts(int $InstanzID)` | Installiert oder aktualisiert die Scripte auf dem Remote-Server. |
-| `RS_ToggleAll(int $InstanzID, string $Column, bool $State)` | Programmatisches Setzen der Spalten "Active", "Action" oder "Delete". |
-
----
-
-## 7. Sicherheitshinweise
-*   **Keine Passwörter im Code:** Das Modul speichert keine Zugangsdaten. Die Sicherheit hängt direkt von der Konfiguration des Secrets Managers (SEC) ab.
-*   **SSL/TLS:** Die Kommunikation erfolgt verschlüsselt über HTTPS. Das Modul ist so konfiguriert, dass es selbstsignierte Zertifikate akzeptiert (`verify_peer: false`), was in internen Netzwerken oft nötig ist.
-*   **Ident-Schutz:** Das Modul nutzt das Präfix `Rem_` für Idents auf dem Remote-System. Manuelle Änderungen an diesen Idents können die Synchronisation unterbrechen.
+## 6. Sicherheitshinweise
+*   **Secrets Manager:** Das Modul speichert keine Passwörter. Alle Credentials werden über das SEC-Modul (Password Vault) bezogen.
+*   **Verschlüsselung:** Die Kommunikation erfolgt ausschließlich über TLS-verschlüsseltes HTTPS.
+*   **Referenz-Schutz:** Variablen werden auf dem Zielsystem über das Feld `ObjectInfo` (`RS_REF:Key:ID`) eindeutig identifiziert, was die Synchronisation immun gegen Umbenennungen macht.
