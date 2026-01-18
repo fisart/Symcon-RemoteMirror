@@ -87,67 +87,69 @@ class RemoteSync extends IPSModule
         $stateCache = [];
         if (is_array($savedSync)) {
             foreach ($savedSync as $item) {
-                if (isset($item['Folder'], $item['ObjectID'])) {
-                    $stateCache[$item['Folder'] . '_' . $item['ObjectID']] = $item;
-                }
+                // NEU: Key enthält jetzt zur Eindeutigkeit auch die LocalRootID
+                $f = $item['Folder'] ?? '';
+                $r = $item['LocalRootID'] ?? 0;
+                $o = $item['ObjectID'] ?? 0;
+                $stateCache[$f . '_' . $r . '_' . $o] = $item;
             }
         }
 
-        // 5. Dynamische Generierung der Sektion 'actions' (Schritt 3)
-        foreach ($targets as $target) {
-            if (empty($target['Name'])) continue;
-            $folderName = $target['Name'];
-            $syncValues = [];
+        // 5. Dynamische Generierung der Sektion 'actions' (Schritt 3) - GRUPPIERT NACH ROOTS (Step 2)
+        foreach ($roots as $root) {
+            if (!isset($root['LocalRootID']) || $root['LocalRootID'] == 0) continue;
 
-            // Variablen-Scan für diesen Folder
-            foreach ($roots as $root) {
-                if (isset($root['TargetFolder']) && $root['TargetFolder'] === $folderName && isset($root['LocalRootID']) && $root['LocalRootID'] > 0 && IPS_ObjectExists($root['LocalRootID'])) {
-                    $foundVars = [];
-                    $this->GetRecursiveVariables($root['LocalRootID'], $foundVars);
-                    foreach ($foundVars as $vID) {
-                        $key = $folderName . '_' . $vID;
-                        $syncValues[] = [
-                            "Folder"   => $folderName,
-                            "ObjectID" => $vID,
-                            "Name"     => IPS_GetName($vID),
-                            "Active"   => $stateCache[$key]['Active'] ?? false,
-                            "Action"   => $stateCache[$key]['Action'] ?? false,
-                            "Delete"   => $stateCache[$key]['Delete'] ?? false
-                        ];
-                    }
-                }
+            $localRootID = (int)$root['LocalRootID'];
+            $folderName  = $root['TargetFolder'] ?? 'Unknown';
+
+            // Name des lokalen Objekts für die Überschrift
+            $localName = IPS_ObjectExists($localRootID) ? IPS_GetName($localRootID) : "ID " . $localRootID;
+
+            $syncValues = [];
+            $foundVars  = [];
+            $this->GetRecursiveVariables($localRootID, $foundVars);
+
+            foreach ($foundVars as $vID) {
+                // Key-Abgleich mit dem stateCache
+                $key = $folderName . '_' . $localRootID . '_' . $vID;
+
+                $syncValues[] = [
+                    "Folder"      => $folderName,
+                    "LocalRootID" => $localRootID, // Muss für RequestAction mitgeführt werden
+                    "ObjectID"    => $vID,
+                    "Name"        => IPS_GetName($vID),
+                    "Active"      => $stateCache[$key]['Active'] ?? false,
+                    "Action"      => $stateCache[$key]['Action'] ?? false,
+                    "Delete"      => $stateCache[$key]['Delete'] ?? false
+                ];
             }
 
-            $listName = "List_" . md5($folderName);
-            // BLUEPRINT: Datenübertragung bei Einzelklick via RequestAction (Präfix RS)
-            $onEdit = "IPS_RequestAction(\$id, 'UpdateRow', json_encode(\$$listName));";
+            // Eindeutige ID für dieses Mapping (Folder + Root)
+            $mappingID = md5($folderName . $localRootID);
+            $listName  = "List_" . $mappingID;
+            $onEdit    = "IPS_RequestAction(\$id, 'UpdateRow', json_encode(\$$listName));";
 
             $form['actions'][] = [
                 "type"    => "ExpansionPanel",
-                "caption" => "TARGET SELECTION: " . strtoupper($folderName) . " (" . count($syncValues) . " Variables)",
+                "caption" => "SOURCE: " . strtoupper($localName) . " (Target Folder: " . $folderName . " | " . count($syncValues) . " Variables)",
                 "items"   => [
                     [
                         "type" => "RowLayout",
                         "items" => [
                             ["type" => "Label", "caption" => "Batch Tools:", "bold" => true, "width" => "90px"],
 
-                            // Sync Gruppe
-                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName');", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName');", "width" => "85px"],
+                            // Sync Gruppe (Parameter $localRootID hinzugefügt)
+                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
-                            // Action Gruppe
-                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName');", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName');", "width" => "85px"],
+                            // Action Gruppe (Parameter $localRootID hinzugefügt)
+                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
-                            // Delete Gruppe
-                            ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, '$folderName');", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, '$folderName');", "width" => "85px"],
-                            ["type" => "Label", "caption" => "|", "width" => "15px"],
-
-                            // Management
-                            ["type" => "Button", "caption" => "💾 SAVE ALL SETS", "onClick" => "RS_SaveSelections(\$id);", "width" => "130px", "confirm" => "Save all pending changes for all targets?"],
+                            // Management & Installation
+                            ["type" => "Button", "caption" => "💾 SAVE ALL", "onClick" => "RS_SaveSelections(\$id);", "width" => "100px"],
                             ["type" => "Button", "caption" => "INSTALL REMOTE", "onClick" => "RS_InstallRemoteScripts(\$id, '$folderName');"]
                         ]
                     ],
@@ -161,6 +163,7 @@ class RemoteSync extends IPSModule
                         "columns" => [
                             ["name" => "ObjectID", "caption" => "ID", "width" => "70px"],
                             ["name" => "Name", "caption" => "Variable Name", "width" => "auto"],
+                            ["name" => "LocalRootID", "caption" => "Root", "visible" => false], // Versteckt für interne Logik
                             ["name" => "Active", "caption" => "Sync", "width" => "60px", "edit" => ["type" => "CheckBox"]],
                             ["name" => "Action", "caption" => "R-Action", "width" => "70px", "edit" => ["type" => "CheckBox"]],
                             ["name" => "Delete", "caption" => "Del Rem.", "width" => "80px", "edit" => ["type" => "CheckBox"]]
@@ -201,45 +204,40 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function ToggleAll(string $Column, bool $State, string $Folder)
+    public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
     {
-        $roots = json_decode($this->ReadPropertyString("Roots"), true);
         $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
         if (!is_array($data)) $data = [];
 
         $map = [];
         foreach ($data as $item) {
-            $map[$item['Folder'] . '_' . $item['ObjectID']] = $item;
+            $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+            $map[$key] = $item;
         }
+
+        $foundVars = [];
+        $this->GetRecursiveVariables($LocalRootID, $foundVars);
 
         $uiValues = [];
-        foreach ($roots as $root) {
-            if (($root['TargetFolder'] ?? '') === $Folder && ($root['LocalRootID'] ?? 0) > 0) {
-                $foundVars = [];
-                $this->GetRecursiveVariables((int)$root['LocalRootID'], $foundVars);
-                foreach ($foundVars as $vID) {
-                    $key = $Folder . '_' . $vID;
-                    if (!isset($map[$key])) {
-                        $map[$key] = [
-                            "Folder" => $Folder,
-                            "ObjectID" => $vID,
-                            "Name" => IPS_GetName($vID),
-                            "Active" => false,
-                            "Action" => false,
-                            "Delete" => false
-                        ];
-                    }
-                    $map[$key][$Column] = $State;
-                    $uiValues[] = $map[$key];
-                }
+        foreach ($foundVars as $vID) {
+            $key = $Folder . '_' . $LocalRootID . '_' . $vID;
+            if (!isset($map[$key])) {
+                $map[$key] = [
+                    "Folder" => $Folder,
+                    "LocalRootID" => $LocalRootID,
+                    "ObjectID" => $vID,
+                    "Name" => IPS_GetName($vID),
+                    "Active" => false,
+                    "Action" => false,
+                    "Delete" => false
+                ];
             }
+            $map[$key][$Column] = $State;
+            $uiValues[] = $map[$key];
         }
 
-        // RAM-Speicher aktualisieren
         $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-
-        // UI der betroffenen Liste sofort aktualisieren
-        $this->UpdateFormField("List_" . md5($Folder), "values", json_encode($uiValues));
+        $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
     }
 
     // --- INSTALLATION ---
@@ -365,7 +363,8 @@ class RemoteSync extends IPSModule
         switch ($Ident) {
             case "UpdateRow":
                 $row = json_decode($Value, true);
-                if (!$row || !isset($row['Folder'], $row['ObjectID'])) return;
+                // NEU: Prüfung auf LocalRootID hinzugefügt
+                if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
 
                 // Aktuellen RAM-Stand laden
                 $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
@@ -373,18 +372,23 @@ class RemoteSync extends IPSModule
 
                 $map = [];
                 foreach ($cache as $item) {
-                    $map[$item['Folder'] . '_' . $item['ObjectID']] = $item;
+                    // NEU: Key-Bildung inklusive LocalRootID für absolute Eindeutigkeit
+                    $f = $item['Folder'] ?? '';
+                    $r = $item['LocalRootID'] ?? 0;
+                    $o = $item['ObjectID'] ?? 0;
+                    $map[$f . '_' . $r . '_' . $o] = $item;
                 }
 
                 // Geänderte Zeile in die Map einfügen/aktualisieren
-                $key = $row['Folder'] . '_' . $row['ObjectID'];
+                $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
                 $map[$key] = [
-                    "Folder"   => $row['Folder'],
-                    "ObjectID" => $row['ObjectID'],
-                    "Name"     => $row['Name'],
-                    "Active"   => $row['Active'],
-                    "Action"   => $row['Action'],
-                    "Delete"   => $row['Delete']
+                    "Folder"      => $row['Folder'],
+                    "LocalRootID" => $row['LocalRootID'], // NEU: Wird mitgespeichert
+                    "ObjectID"    => $row['ObjectID'],
+                    "Name"        => $row['Name'],
+                    "Active"      => $row['Active'],
+                    "Action"      => $row['Action'],
+                    "Delete"      => $row['Delete']
                 ];
 
                 // Zurück in den RAM-Speicher (Attribut) schreiben
