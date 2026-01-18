@@ -215,41 +215,41 @@ class RemoteSync extends IPSModule
         }
     }
 
- public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
-{
-    $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
-    if (!is_array($data)) $data = [];
+    public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
+    {
+        $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
+        if (!is_array($data)) $data = [];
 
-    $map = [];
-    foreach ($data as $item) {
-        $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
-        $map[$key] = $item;
-    }
-
-    $foundVars = [];
-    $this->GetRecursiveVariables($LocalRootID, $foundVars);
-    
-    $uiValues = [];
-    foreach ($foundVars as $vID) {
-        $key = $Folder . '_' . $LocalRootID . '_' . $vID;
-        if (!isset($map[$key])) {
-            $map[$key] = ["Folder" => $Folder, "LocalRootID" => $LocalRootID, "ObjectID" => $vID, "Name" => IPS_GetName($vID), "Active" => false, "Action" => false, "Delete" => false];
-        }
-        
-        $map[$key][$Column] = $State;
-
-        // Spezial-Logik: Wenn Delete auf TRUE, dann Sync und Action auf FALSE
-        if ($Column === 'Delete' && $State === true) {
-            $map[$key]['Active'] = false;
-            $map[$key]['Action'] = false;
+        $map = [];
+        foreach ($data as $item) {
+            $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+            $map[$key] = $item;
         }
 
-        $uiValues[] = $map[$key];
-    }
+        $foundVars = [];
+        $this->GetRecursiveVariables($LocalRootID, $foundVars);
 
-    $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-    $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
-}
+        $uiValues = [];
+        foreach ($foundVars as $vID) {
+            $key = $Folder . '_' . $LocalRootID . '_' . $vID;
+            if (!isset($map[$key])) {
+                $map[$key] = ["Folder" => $Folder, "LocalRootID" => $LocalRootID, "ObjectID" => $vID, "Name" => IPS_GetName($vID), "Active" => false, "Action" => false, "Delete" => false];
+            }
+
+            $map[$key][$Column] = $State;
+
+            // Spezial-Logik: Wenn Delete auf TRUE, dann Sync und Action auf FALSE
+            if ($Column === 'Delete' && $State === true) {
+                $map[$key]['Active'] = false;
+                $map[$key]['Action'] = false;
+            }
+
+            $uiValues[] = $map[$key];
+        }
+
+        $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+        $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
+    }
 
     // --- INSTALLATION ---
     public function InstallRemoteScripts(string $Folder)
@@ -325,8 +325,7 @@ class RemoteSync extends IPSModule
 
     // --- RUNTIME ---
 
-
- public function ApplyChanges()
+    public function ApplyChanges()
     {
         // BEST PRACTICE: Warten bis der Kernel bereit ist, um "InstanceInterface not available" zu verhindern
         if (IPS_GetKernelRunlevel() !== KR_READY) {
@@ -389,23 +388,23 @@ class RemoteSync extends IPSModule
             if ($count > 0 || $hasDeleteTask) {
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
-            $this->LogDebug("ApplyChanges: Registered $count variables. Deletion tasks pending: " . ($hasDeleteTask ? "Yes" : "No"))
+            $this->LogDebug("ApplyChanges: Registered $count variables. Deletion tasks pending: " . ($hasDeleteTask ? "Yes" : "No"));
+        }
+    }
 
-public function RequestAction($Ident, $Value)
+    public function RequestAction($Ident, $Value)
     {
         switch ($Ident) {
             case "UpdateRow":
                 $row = json_decode($Value, true);
                 if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
 
-                // --- LOGIK: Wenn Löschen gewählt wird, Sync und Action deaktivieren ---
-                if (!empty($row['Delete'])) {
+                // --- NEUE LOGIK ---
+                if ($row['Delete']) {
                     $row['Active'] = false;
-                    $row['Action'] = false;
                 }
-                // ---------------------------------------------------------------------
+                // ------------------
 
-                // Aktuellen RAM-Stand laden
                 $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
                 if (!is_array($cache)) $cache = [];
 
@@ -415,27 +414,10 @@ public function RequestAction($Ident, $Value)
                     $map[$k] = $item;
                 }
 
-                // Geänderte Zeile in die Map einfügen/aktualisieren
                 $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
                 $map[$key] = $row;
 
-                // Zurück in den RAM-Speicher (Attribut) schreiben
                 $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-                
-                // UI der betroffenen Liste sofort aktualisieren, um die deaktivierten Haken anzuzeigen
-                $mappingID = md5($row['Folder'] . $row['LocalRootID']);
-                // Wir filtern die Map, um nur die Werte für diese spezifische Liste zurückzugeben
-                $uiValues = [];
-                foreach($map as $item) {
-                    if ($item['Folder'] === $row['Folder'] && $item['LocalRootID'] === $row['LocalRootID']) {
-                        $uiValues[] = $item;
-                    }
-                }
-                $this->UpdateFormField("List_" . $mappingID, "values", json_encode($uiValues));
-                break;
-                
-            case "UpdateUI":
-                $this->ReloadForm();
                 break;
         }
     }
@@ -538,70 +520,70 @@ public function RequestAction($Ident, $Value)
 
 
 
-private function AddToBuffer($localID)
-{
-    // Nutzt konsequent das Attribut
-    $syncList = json_decode($this->ReadAttributeString("SyncListCache"), true);
-    $roots = json_decode($this->ReadPropertyString("Roots"), true);
-    $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-    $buffer = json_decode($rawBuffer, true);
-    if (!is_array($buffer)) $buffer = [];
+    private function AddToBuffer($localID)
+    {
+        // Nutzt konsequent das Attribut
+        $syncList = json_decode($this->ReadAttributeString("SyncListCache"), true);
+        $roots = json_decode($this->ReadPropertyString("Roots"), true);
+        $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
+        $buffer = json_decode($rawBuffer, true);
+        if (!is_array($buffer)) $buffer = [];
 
-    if (!is_array($syncList) || !is_array($roots)) return;
+        if (!is_array($syncList) || !is_array($roots)) return;
 
-    foreach ($syncList as $item) {
-        // Logik: Variable in den Buffer aufnehmen, wenn Active ODER Delete gesetzt ist
-        if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
-            $folderName = $item['Folder'];
+        foreach ($syncList as $item) {
+            // Logik: Variable in den Buffer aufnehmen, wenn Active ODER Delete gesetzt ist
+            if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
+                $folderName = $item['Folder'];
 
-            // Mapping suchen (Ihre Manager-Logik)
-            $foundMapping = false;
-            $localRootID = 0;
-            $remoteRootID = 0;
-            foreach ($roots as $root) {
-                if (($root['TargetFolder'] ?? '') === $folderName) {
-                    if ($this->IsChildOf((int)$localID, (int)$root['LocalRootID'])) {
-                        $localRootID = (int)$root['LocalRootID'];
-                        $remoteRootID = (int)$root['RemoteRootID'];
-                        $foundMapping = true;
-                        break;
+                // Mapping suchen (Ihre Manager-Logik)
+                $foundMapping = false;
+                $localRootID = 0;
+                $remoteRootID = 0;
+                foreach ($roots as $root) {
+                    if (($root['TargetFolder'] ?? '') === $folderName) {
+                        if ($this->IsChildOf((int)$localID, (int)$root['LocalRootID'])) {
+                            $localRootID = (int)$root['LocalRootID'];
+                            $remoteRootID = (int)$root['RemoteRootID'];
+                            $foundMapping = true;
+                            break;
+                        }
                     }
                 }
+
+                if (!$foundMapping || !IPS_ObjectExists($localID)) continue;
+
+                $var = IPS_GetVariable($localID);
+                $payload = [
+                    'LocalID' => $localID,
+                    'Value'   => GetValue($localID),
+                    'Type'    => $var['VariableType'],
+                    'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
+                    'Name'    => IPS_GetName($localID),
+                    'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
+                    'Key'     => $this->ReadPropertyString("LocalServerKey"),
+                    'Action'  => !empty($item['Action']),
+                    'Delete'  => !empty($item['Delete']) // WICHTIG: Flag für den Receiver
+                ];
+
+                // Pfad-Berechnung (Ihre Manager-Logik)
+                $pathStack = [];
+                $currentID = $localID;
+                while ($currentID != $localRootID && $currentID > 0) {
+                    array_unshift($pathStack, IPS_GetName($currentID));
+                    $currentID = IPS_GetParent($currentID);
+                }
+                $payload['Path'] = $pathStack;
+
+                $bufferKey = $folderName . ':' . $remoteRootID;
+                $buffer[$bufferKey][$localID] = $payload;
             }
-
-            if (!$foundMapping || !IPS_ObjectExists($localID)) continue;
-
-            $var = IPS_GetVariable($localID);
-            $payload = [
-                'LocalID' => $localID,
-                'Value'   => GetValue($localID),
-                'Type'    => $var['VariableType'],
-                'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
-                'Name'    => IPS_GetName($localID),
-                'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
-                'Key'     => $this->ReadPropertyString("LocalServerKey"),
-                'Action'  => !empty($item['Action']),
-                'Delete'  => !empty($item['Delete']) // WICHTIG: Flag für den Receiver
-            ];
-
-            // Pfad-Berechnung (Ihre Manager-Logik)
-            $pathStack = [];
-            $currentID = $localID;
-            while ($currentID != $localRootID && $currentID > 0) {
-                array_unshift($pathStack, IPS_GetName($currentID));
-                $currentID = IPS_GetParent($currentID);
-            }
-            $payload['Path'] = $pathStack;
-
-            $bufferKey = $folderName . ':' . $remoteRootID;
-            $buffer[$bufferKey][$localID] = $payload;
         }
+
+        $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
+        $this->SetTimerInterval('BufferTimer', 200);
     }
 
-    $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
-    $this->SetTimerInterval('BufferTimer', 200);
-}
- 
 
     private function IsChildOf(int $objectID, int $parentID): bool
     {
