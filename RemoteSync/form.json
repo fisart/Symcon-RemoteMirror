@@ -33,7 +33,7 @@
                 { "name": "Name", "caption": "Folder Name", "width": "150px", "add": "", "edit": { "type": "ValidationTextBox" } },
                 { "name": "RemoteKey", "caption": "Remote Server Key", "width": "200px", "add": "", "edit": { "type": "Select", "options": [] } },
                 { 
-                    "name": "RemoteScriptRootID", "caption": "Script ID", "width": "120px", "add": 10000, 
+                    "name": "RemoteScriptRootID", "caption": "Remote Script ID", "width": "120px", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
                 },
                 { 
