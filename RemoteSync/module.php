@@ -10,7 +10,7 @@ class RemoteSync extends IPSModule
     // We rely on attribute locking for state management
     private $isSending = false;
 
-    public function Create()
+public function Create()
     {
         parent::Create();
 
@@ -18,87 +18,206 @@ class RemoteSync extends IPSModule
         $this->config = [];
         $this->buffer = [];
 
+        // --- ORIGINAL PROPERTIES ---
         $this->RegisterPropertyBoolean('DebugMode', false);
         $this->RegisterPropertyBoolean('AutoCreate', true);
-        
         $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
         $this->RegisterPropertyString('RemoteServerKey', ''); 
-        
         $this->RegisterPropertyInteger('RemotePasswordModuleID', 0);
         $this->RegisterPropertyString('LocalServerKey', '');
-
         $this->RegisterPropertyInteger('LocalRootID', 0);
         $this->RegisterPropertyInteger('RemoteRootID', 0);
-        $this->RegisterPropertyInteger('RemoteScriptRootID', 0); // New Property
+        $this->RegisterPropertyInteger('RemoteScriptRootID', 0);
         $this->RegisterPropertyString('SyncList', '[]');
-        
+        $this->RegisterPropertyBoolean('ReplicateProfiles', true);
+
+        // --- NEU: MANAGER PROPERTIES ---
+        $this->RegisterPropertyString("Targets", "[]");
+        $this->RegisterPropertyString("Roots", "[]");
+
+        // --- ORIGINAL ATTRIBUTES ---
         $this->RegisterAttributeString('_SyncListCache', '[]');
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
-        
         $this->RegisterAttributeString('_BatchBuffer', '[]');
         $this->RegisterAttributeBoolean('_IsSending', false);
-        
+
+        // --- NEU: MANAGER ATTRIBUTES (Blueprint-Speicher) ---
+        $this->RegisterAttributeString("SyncListCache", "[]"); 
+
+        // --- TIMERS ---
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
-
-        $this->RegisterPropertyBoolean('ReplicateProfiles', true); // NEW
-
     }
 
     // --- FORM & UI ---
-    public function GetConfigurationForm()
+public function GetConfigurationForm()
     {
+        // Sicherstellen, dass der RAM-Arbeitsspeicher beim Start gefüllt ist
+        if ($this->ReadAttributeString("SyncListCache") === "[]") {
+            $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
+        }
+
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
-        
-        try {
-            $secID = @$this->ReadPropertyInteger('LocalPasswordModuleID');
-            $currentRemoteKey = @$this->ReadPropertyString('RemoteServerKey');
-            $currentLocalKey = @$this->ReadPropertyString('LocalServerKey');
-        } catch (Exception $e) { $secID = 0; $currentRemoteKey = ''; $currentLocalKey = ''; }
-        
+
+        // Statische Footer-Buttons (z.B. Refresh) aus der Datei zwischenspeichern
+        $staticFooter = $form['actions'];
+        $form['actions'] = [];
+
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $targets = json_decode($this->ReadPropertyString("Targets"), true);
+        $roots = json_decode($this->ReadPropertyString("Roots"), true);
+        $savedSync = json_decode($this->ReadAttributeString("SyncListCache"), true);
+
+        // 1. SEC-Keys für Dropdowns abrufen
         $serverOptions = [['caption' => "Please select...", 'value' => ""]];
-
         if ($secID > 0 && IPS_InstanceExists($secID) && function_exists('SEC_GetKeys')) {
-            try {
-                $keys = json_decode(SEC_GetKeys($secID), true);
-                if (is_array($keys)) {
-                    foreach ($keys as $k) $serverOptions[] = ['caption' => (string)$k, 'value' => (string)$k];
+            $keys = json_decode(SEC_GetKeys($secID), true);
+            if (is_array($keys)) foreach ($keys as $k) $serverOptions[] = ['caption' => (string)$k, 'value' => (string)$k];
+        }
+
+        // 2. Folder-Namen für Dropdowns abrufen
+        $folderOptions = [['caption' => "Select Target Folder...", 'value' => ""]];
+        foreach ($targets as $t) if (!empty($t['Name'])) $folderOptions[] = ['caption' => $t['Name'], 'value' => $t['Name']];
+
+        // 3. Statische Elemente (Schritt 1 & 2) mit Dropdowns befüllen
+        $this->UpdateStaticFormElements($form['elements'], $serverOptions, $folderOptions);
+
+        // 4. Cache-Mapping für schnellen Zugriff auf Checkbox-Zustände
+        $stateCache = [];
+        if (is_array($savedSync)) {
+            foreach ($savedSync as $item) {
+                if (isset($item['Folder'], $item['ObjectID'])) {
+                    $stateCache[$item['Folder'] . '_' . $item['ObjectID']] = $item;
                 }
-            } catch (Exception $e) { }
-        } else {
-            $serverOptions[0]['caption'] = "Select Secrets Module and Apply first";
-        }
-
-        $remoteFound = false; $localFound = false;
-        foreach ($serverOptions as $opt) {
-            if ((string)$opt['value'] === $currentRemoteKey) $remoteFound = true;
-            if ((string)$opt['value'] === $currentLocalKey) $localFound = true;
-        }
-        if ($currentRemoteKey !== '' && !$remoteFound) $serverOptions[] = ['caption' => "$currentRemoteKey (Not found)", 'value' => $currentRemoteKey];
-        if ($currentLocalKey !== '' && !$localFound && $currentLocalKey !== $currentRemoteKey) $serverOptions[] = ['caption' => "$currentLocalKey (Not found)", 'value' => $currentLocalKey];
-
-        foreach ($form['elements'] as &$element) {
-            if (isset($element['name']) && ($element['name'] == 'RemoteServerKey' || $element['name'] == 'LocalServerKey')) {
-                $element['options'] = $serverOptions;
             }
         }
 
-        $listValues = $this->BuildSyncListAndCache();
-        foreach ($form['elements'] as &$element) {
-            if (isset($element['name']) && $element['name'] == 'SyncList') {
-                $element['values'] = $listValues;
-                break;
+        // 5. Dynamische Generierung der Sektion 'actions' (Schritt 3)
+        foreach ($targets as $target) {
+            if (empty($target['Name'])) continue;
+            $folderName = $target['Name'];
+            $syncValues = [];
+
+            // Alle Variablen finden, die diesem Folder über Schritt 2 zugeordnet sind
+            foreach ($roots as $root) {
+                if (isset($root['TargetFolder']) && $root['TargetFolder'] === $folderName && isset($root['LocalRootID']) && $root['LocalRootID'] > 0 && IPS_ObjectExists($root['LocalRootID'])) {
+                    $foundVars = [];
+                    $this->GetRecursiveVariables($root['LocalRootID'], $foundVars);
+                    foreach ($foundVars as $vID) {
+                        $key = $folderName . '_' . $vID;
+                        $syncValues[] = [
+                            "Folder"   => $folderName,
+                            "ObjectID" => $vID,
+                            "Name"     => IPS_GetName($vID),
+                            "Active"   => $stateCache[$key]['Active'] ?? false,
+                            "Action"   => $stateCache[$key]['Action'] ?? false,
+                            "Delete"   => $stateCache[$key]['Delete'] ?? false
+                        ];
+                    }
+                }
             }
+
+            $listName = "List_" . md5($folderName);
+            // BLUEPRINT: Datenübertragung bei Einzelklick via RequestAction
+            $onEdit = "IPS_RequestAction(\$id, 'UpdateRow', json_encode(\$$listName));";
+
+            $form['actions'][] = [
+                "type"    => "ExpansionPanel",
+                "caption" => "TARGET SELECTION: " . strtoupper($folderName) . " (" . count($syncValues) . " Variables)",
+                "items"   => [
+                    [
+                        "type" => "RowLayout",
+                        "items" => [
+                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName');", "width" => "90px"],
+                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName');", "width" => "90px"],
+                            ["type" => "Label", "caption" => "|", "width" => "15px"],
+                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName');", "width" => "90px"],
+                            ["type" => "Label", "caption" => "|", "width" => "15px"],
+                            ["type" => "Button", "caption" => "💾 SAVE ALL SETS", "onClick" => "RS_SaveSelections(\$id);", "width" => "130px", "confirm" => "Save all pending changes for all targets?"],
+                            ["type" => "Button", "caption" => "INSTALL REMOTE", "onClick" => "RS_InstallRemoteScripts(\$id, '$folderName');"]
+                        ]
+                    ],
+                    [
+                        "type" => "List",
+                        "name" => $listName,
+                        "rowCount" => min(count($syncValues) + 1, 15),
+                        "add" => false, "delete" => false,
+                        "onEdit" => $onEdit,
+                        "columns" => [
+                            ["name" => "ObjectID", "caption" => "ID", "width" => "70px"],
+                            ["name" => "Name", "caption" => "Variable Name", "width" => "auto"],
+                            ["name" => "Active", "caption" => "Sync", "width" => "60px", "edit" => ["type" => "CheckBox"]],
+                            ["name" => "Action", "caption" => "R-Action", "width" => "70px", "edit" => ["type" => "CheckBox"]],
+                            ["name" => "Delete", "caption" => "Del Rem.", "width" => "80px", "edit" => ["type" => "CheckBox"]]
+                        ],
+                        "values" => $syncValues
+                    ]
+                ]
+            ];
         }
+
+        // Globalen Footer wieder anhängen
+        foreach ($staticFooter as $btn) { $form['actions'][] = $btn; }
 
         return json_encode($form);
     }
 
-    public function ToggleAll(string $Column, bool $State)
+    // Hilfsfunktion zum rekursiven Befüllen der statischen Formular-Elemente
+    private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
     {
-        $newValues = $this->BuildSyncListAndCache($Column, $State);
-        $this->UpdateFormField('SyncList', 'values', json_encode($newValues));
+        foreach ($elements as &$element) {
+            if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions);
+            if (!isset($element['name'])) continue;
+            if ($element['name'] === 'LocalServerKey') $element['options'] = $serverOptions;
+            if ($element['name'] === 'Targets') {
+                foreach ($element['columns'] as &$col) {
+                    if ($col['name'] === 'RemoteKey') $col['edit']['options'] = $serverOptions;
+                }
+            }
+            if ($element['name'] === 'Roots') {
+                foreach ($element['columns'] as &$col) {
+                    if ($col['name'] === 'TargetFolder') $col['edit']['options'] = $folderOptions;
+                }
+            }
+        }
+    }
+
+public function ToggleAll(string $Column, bool $State, string $Folder)
+    {
+        $roots = json_decode($this->ReadPropertyString("Roots"), true);
+        $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
+        if (!is_array($data)) $data = [];
+
+        $map = [];
+        foreach ($data as $item) {
+            $map[$item['Folder'] . '_' . $item['ObjectID']] = $item;
+        }
+
+        $uiValues = [];
+        foreach ($roots as $root) {
+            if (($root['TargetFolder'] ?? '') === $Folder && ($root['LocalRootID'] ?? 0) > 0) {
+                $foundVars = [];
+                $this->GetRecursiveVariables((int)$root['LocalRootID'], $foundVars);
+                foreach ($foundVars as $vID) {
+                    $key = $Folder . '_' . $vID;
+                    if (!isset($map[$key])) {
+                        $map[$key] = [
+                            "Folder" => $Folder, "ObjectID" => $vID, "Name" => IPS_GetName($vID), 
+                            "Active" => false, "Action" => false, "Delete" => false
+                        ];
+                    }
+                    $map[$key][$Column] = $State;
+                    $uiValues[] = $map[$key];
+                }
+            }
+        }
+
+        // RAM-Speicher aktualisieren
+        $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+        
+        // UI der betroffenen Liste sofort aktualisieren
+        $this->UpdateFormField("List_" . md5($Folder), "values", json_encode($uiValues));
     }
 
     // --- INSTALLATION ---
@@ -157,46 +276,87 @@ class RemoteSync extends IPSModule
 
     // --- RUNTIME ---
 
-    public function ApplyChanges()
+public function ApplyChanges()
     {
         parent::ApplyChanges();
         
         $this->rpcClient = null;
         
-        // Reset Persistent States
+        // Zustände zurücksetzen (Original-Logik)
         $this->WriteAttributeBoolean('_IsSending', false); 
         $this->WriteAttributeString('_BatchBuffer', '[]'); 
+
+        // NEU: RAM-Cache für UI initialisieren (Blueprint)
+        $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
 
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
+        // Alle alten Nachrichten-Registrierungen löschen (Original-Logik)
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) $this->UnregisterMessage($senderID, VM_UPDATE);
 
-        if (!$this->LoadConfig()) {
-            $this->SetStatus(IS_INACTIVE);
-            return;
-        }
-
+        // NEU: Variablen aus der konsolidierten Manager-Liste registrieren
+        $syncList = json_decode($this->ReadPropertyString("SyncList"), true);
         $count = 0;
-        if (is_array($this->config['SyncList'])) {
-            foreach ($this->config['SyncList'] as $item) {
-                if (!empty($item['Active']) && IPS_ObjectExists($item['ObjectID'])) {
-                    $this->RegisterMessage($item['ObjectID'], VM_UPDATE);
+        if (is_array($syncList)) {
+            foreach ($syncList as $item) {
+                if (!empty($item['Active']) && isset($item['ObjectID']) && IPS_ObjectExists((int)$item['ObjectID'])) {
+                    $this->RegisterMessage((int)$item['ObjectID'], VM_UPDATE);
                     $count++;
                 }
             }
         }
 
-        if ($this->config['LocalRootID'] == 0 || $this->config['LocalPasswordModuleID'] == 0 || $this->config['RemoteServerKey'] === '') {
-            $this->SetStatus(IS_INACTIVE);
+        // Status-Management (Original-Logik angepasst auf count)
+        if ($count === 0 && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
+            $this->SetStatus(104); // Inaktiv
         } else {
-            $this->SetStatus(IS_ACTIVE);
-            $this->SetTimerInterval('StartSyncTimer', 250); 
-            $this->LogDebug("ApplyChanges: Registered $count vars. Sync scheduled.");
+            $this->SetStatus(102); // Aktiv
+            if ($count > 0) $this->SetTimerInterval('StartSyncTimer', 250); 
+            $this->LogDebug("ApplyChanges: Registered $count variables across all targets.");
+        }
+    }
+public function RequestAction($Ident, $Value)
+    {
+        switch ($Ident) {
+            case "UpdateRow":
+                $row = json_decode($Value, true);
+                if (!$row || !isset($row['Folder'], $row['ObjectID'])) return;
+
+                // Aktuellen RAM-Stand laden
+                $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
+                if (!is_array($cache)) $cache = [];
+
+                $map = [];
+                foreach ($cache as $item) {
+                    $map[$item['Folder'] . '_' . $item['ObjectID']] = $item;
+                }
+
+                // Geänderte Zeile in die Map einfügen/aktualisieren
+                $key = $row['Folder'] . '_' . $row['ObjectID'];
+                $map[$key] = [
+                    "Folder"   => $row['Folder'],
+                    "ObjectID" => $row['ObjectID'],
+                    "Name"     => $row['Name'],
+                    "Active"   => $row['Active'],
+                    "Action"   => $row['Action'],
+                    "Delete"   => $row['Delete']
+                ];
+
+                // Zurück in den RAM-Speicher (Attribut) schreiben
+                $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+                break;
         }
     }
 
+    public function SaveSelections()
+    {
+        // Den Stand aus dem RAM nehmen und permanent speichern
+        $data = $this->ReadAttributeString("SyncListCache");
+        IPS_SetProperty($this->InstanceID, "SyncList", $data);
+        IPS_ApplyChanges($this->InstanceID);
+    }
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
         $this->LogDebug("Sink: Triggered by ID $SenderID");
@@ -218,163 +378,119 @@ class RemoteSync extends IPSModule
         $this->FlushBuffer();
     }
 
-    private function AddToBuffer($localID)
+private function AddToBuffer($localID)
     {
-        if (empty($this->config)) {
-            if (!$this->LoadConfig()) {
-                $this->LogDebug("Buffer Error: LoadConfig() failed.");
-                return;
-            }
-        }
-
-        $itemConfig = null;
-        foreach ($this->config['SyncList'] as $item) {
-            if ($item['ObjectID'] == $localID) {
-                $itemConfig = $item;
-                break;
-            }
-        }
-
-        if (!$itemConfig) {
-            $this->LogDebug("Buffer Error: ID $localID not found in active SyncList.");
-            return;
-        }
-
-        // 1. READ BUFFER from Attribute
+        $syncList = json_decode($this->ReadPropertyString("SyncList"), true);
+        $roots = json_decode($this->ReadPropertyString("Roots"), true);
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
         $buffer = json_decode($rawBuffer, true);
         if (!is_array($buffer)) $buffer = [];
 
-        $payload = [
-            'LocalID' => $localID,
-            'Delete'  => !empty($itemConfig['Delete']) && empty($itemConfig['Active']),
-            'Action'  => !empty($itemConfig['Action']),
-            'Key'     => $this->config['LocalServerKey'] 
-        ];
+        // Wir gehen alle Einträge der SyncList durch, um alle Ziele dieser Variable zu finden
+        foreach ($syncList as $item) {
+            if ($item['ObjectID'] == $localID && !empty($item['Active'])) {
+                $folderName = $item['Folder'];
+                
+                // Den passenden lokalen Root-Anker für diesen Folder finden (für Pfadberechnung)
+                $localRootID = 0;
+                foreach ($roots as $root) {
+                    if ($root['TargetFolder'] === $folderName) {
+                        $localRootID = (int)$root['LocalRootID'];
+                        break;
+                    }
+                }
 
-        if (!$payload['Delete']) {
-            if (!IPS_ObjectExists($localID)) return;
-            $var = IPS_GetVariable($localID);
-            $payload['Value']   = GetValue($localID);
-            $payload['Type']    = $var['VariableType'];
-            $payload['Profile'] = $var['VariableCustomProfile'] ?: $var['VariableProfile'];
-            $payload['Name']    = IPS_GetName($localID);
-            $payload['Ident']   = IPS_GetObject($localID)['ObjectIdent']; 
-            
-            $pathStack = [];
-            $currentID = $localID;
-            $rootID = $this->config['LocalRootID'];
-            while ($currentID != $rootID && $currentID > 0) {
-                array_unshift($pathStack, IPS_GetName($currentID));
-                $currentID = IPS_GetParent($currentID);
+                if (!IPS_ObjectExists($localID)) continue;
+                $var = IPS_GetVariable($localID);
+
+                // PAYLOAD GENERIERUNG: Exakt identisch zum Original
+                $payload = [
+                    'LocalID' => $localID,
+                    'Value'   => GetValue($localID),
+                    'Type'    => $var['VariableType'],
+                    'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
+                    'Name'    => IPS_GetName($localID),
+                    'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
+                    'Key'     => $this->ReadPropertyString("LocalServerKey"), // Globaler Key aus Create
+                    'Action'  => !empty($item['Action']),
+                    'Delete'  => !empty($item['Delete'])
+                ];
+
+                // Pfad-Berechnung relativ zum folder-spezifischen Root
+                $pathStack = [];
+                $currentID = $localID;
+                while ($currentID != $localRootID && $currentID > 0) {
+                    array_unshift($pathStack, IPS_GetName($currentID));
+                    $currentID = IPS_GetParent($currentID);
+                }
+                $payload['Path'] = $pathStack;
+
+                // Im Buffer unter dem Folder ablegen
+                $buffer[$folderName][$localID] = $payload;
             }
-            $payload['Path'] = $pathStack;
         }
 
-        // 2. UPDATE BUFFER
-        $buffer[$localID] = $payload; 
-
-        // 3. WRITE BUFFER
         $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
-
-        $this->LogDebug("Buffer: Added ID $localID. Timer set.");
         $this->SetTimerInterval('BufferTimer', 200); 
     }
 
-    public function FlushBuffer()
+public function FlushBuffer()
     {
-        // 1. Check Lock (Attribute)
-        if ($this->ReadAttributeBoolean('_IsSending')) {
-            $this->LogDebug("Flush: Skipped (Busy)");
-            return;
-        }
-        
+        if ($this->ReadAttributeBoolean('_IsSending')) return;
         $this->SetTimerInterval('BufferTimer', 0);
         
-        // 2. Read Buffer
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-        $buffer = json_decode($rawBuffer, true);
+        $fullBuffer = json_decode($rawBuffer, true);
+        if (empty($fullBuffer)) return;
 
-        if (empty($buffer)) return;
-
-        // 3. Set Lock
         $this->WriteAttributeBoolean('_IsSending', true);
 
         try {
-            // RELOAD CONFIG - Important for Timer context
-            if (empty($this->config)) {
-                if (!$this->LoadConfig()) throw new Exception("Config Reload Failed");
-            }
+            foreach ($fullBuffer as $folderName => $variables) {
+                // 1. Ziel-Konfiguration für diesen Folder holen
+                $target = $this->GetTargetConfig($folderName);
+                if (!$target) continue;
 
-            $receiverID = $this->ReadAttributeInteger('_RemoteReceiverID');
-            if ($receiverID == 0) {
-                $this->LogDebug("Error: Remote Scripts not installed.");
-                // Clear buffer to prevent endless loops
-                $this->WriteAttributeString('_BatchBuffer', '[]'); 
-                return;
-            }
+                // 2. Verbindung zu DIESEM Ziel aufbauen
+                if (!$this->InitConnectionForFolder($target)) continue;
 
-            if (!$this->InitConnection()) throw new Exception("Connection Init failed");
-
-            // Extract values and CLEAR attribute immediately
-            $batch = array_values($buffer);
-
-            // Build profile definitions (optional)
-            $profiles = [];
-            if (!empty($this->config['ReplicateProfiles'])) {
-                foreach ($batch as $item) {
-                    if (empty($item['Profile'])) {
-                        continue;
-                    }
-                    $profileName = $item['Profile'];
-                    if (isset($profiles[$profileName])) {
-                        continue;
-                    }
-                    // Only collect if the profile exists locally
-                    if (@IPS_VariableProfileExists($profileName)) {
-                        $def = @IPS_GetVariableProfile($profileName);
-                        if (is_array($def)) {
-                            // Send raw definition as returned by IPS_GetVariableProfile
-                            $profiles[$profileName] = $def;
+                $batch = array_values($variables);
+                
+                // 3. Profile sammeln (Original-Logik)
+                $profiles = [];
+                if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
+                    foreach ($batch as $item) {
+                        if (!empty($item['Profile']) && !isset($profiles[$item['Profile']])) {
+                            if (@IPS_VariableProfileExists($item['Profile'])) {
+                                $profiles[$item['Profile']] = IPS_GetVariableProfile($item['Profile']);
+                            }
                         }
                     }
                 }
-            }
 
-            // Clear buffer attribute now that we have the batch
+                // 4. Paket schnüren
+                $packet = [
+                    'TargetID'   => (int)$target['RemoteRootID'],
+                    'Batch'      => $batch,
+                    'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
+                    'Profiles'   => $profiles
+                ];
+
+                // 5. Empfänger-Script auf dem Remote-System finden
+                $receiverID = $this->FindRemoteScriptID((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
+                
+                if ($receiverID > 0) {
+                    $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
+                }
+            }
+            
+            // Buffer erst leeren, wenn alle Folder abgearbeitet wurden
             $this->WriteAttributeString('_BatchBuffer', '[]'); 
 
-            $this->LogDebug("Sending batch of " . count($batch) . " items...");
-
-            // New Packet Structure with Profiles
-            $packet = [
-                'TargetID'   => $this->config['RemoteRootID'],
-                'Batch'      => $batch,
-                'AutoCreate' => (bool)$this->config['AutoCreate'],
-                'Profiles'   => $profiles
-            ];
-
-            $json = json_encode($packet);
-            
-            if ($json === false) throw new Exception("JSON Encode Failed");
-
-            $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $json]);
-            
-            if (!empty($result)) {
-               $this->LogDebug("Remote Result: " . $result);
-            }
-            
         } catch (Exception $e) {
-            $this->LogDebug("Batch Send Failed: " . $e->getMessage());
+            $this->LogDebug("Flush Error: " . $e->getMessage());
         } finally {
-            // 4. Release Lock
             $this->WriteAttributeBoolean('_IsSending', false);
-            
-            // 5. Check if new data arrived while sending
-            $currentBuffer = $this->ReadAttributeString('_BatchBuffer');
-            if ($currentBuffer !== '[]' && $currentBuffer !== '') {
-                $this->SetTimerInterval('BufferTimer', 100); 
-            }
         }
     }
 
@@ -741,13 +857,17 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
         return $values;
     }
 
-    private function GetRecursiveVariables($parentID, &$result)
+private function GetRecursiveVariables($parentID, &$result)
     {
         $children = IPS_GetChildrenIDs($parentID);
         foreach ($children as $childID) {
             $obj = IPS_GetObject($childID);
-            if ($obj['ObjectType'] == 2) { $result[] = $childID; }
-            if ($obj['HasChildren']) { $this->GetRecursiveVariables($childID, $result); }
+            if ($obj['ObjectType'] == 2) { 
+                $result[] = $childID; 
+            }
+            if ($obj['HasChildren']) { 
+                $this->GetRecursiveVariables($childID, $result); 
+            }
         }
     }
 
@@ -807,6 +927,51 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
         } catch (Exception $e) { }
     }
 }
+
+private function GetTargetConfig(string $FolderName)
+    {
+        $targets = json_decode($this->ReadPropertyString("Targets"), true);
+        if (!is_array($targets)) return null;
+        foreach ($targets as $target) {
+            if (isset($target['Name']) && $target['Name'] === $FolderName) return $target;
+        }
+        return null;
+    }
+
+    private function InitConnectionForFolder(array $target): bool
+    {
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $key = $target['RemoteKey'] ?? '';
+        if ($secID == 0 || $key === '') return false;
+
+        try {
+            if (!function_exists('SEC_GetSecret')) return false;
+            $json = SEC_GetSecret($secID, $key);
+            $config = json_decode($json, true);
+            if (!is_array($config)) return false;
+            
+            $url = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? null;
+            $user = $config['User'] ?? $config['user'] ?? $config['Username'] ?? null;
+            $pw = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? null;
+            if (!$url) return false;
+            
+            $connectionUrl = 'https://'.urlencode($user).":".urlencode($pw)."@".$url."/api/";
+            $this->rpcClient = new RemoteSync_RPCClient($connectionUrl); // Hier Ihren Original-Klassennamen nutzen
+            return true;
+        } catch (Exception $e) { return false; }
+    }
+
+    private function FindRemoteScriptID(int $parentID, string $name): int
+    {
+        $children = @$this->rpcClient->IPS_GetChildrenIDs($parentID);
+        if (is_array($children)) {
+            foreach ($children as $cID) {
+                $obj = $this->rpcClient->IPS_GetObject($cID);
+                if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) return $cID;
+            }
+        }
+        return 0;
+    }
 
 class RemoteSync_RPCClient {
     private $url;

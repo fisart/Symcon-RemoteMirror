@@ -1,79 +1,68 @@
 {
     "elements": [
-        { "type": "Label", "caption": "Remote Mirror Configuration" },
-        { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode" },
-        { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
-        { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
-
-        { "type": "Label", "caption": "Authentication (Local -> Remote)" },
-        { "type": "Label", "caption": "Select your local Secrets Manager instance" },
-        { 
-            "type": "SelectInstance", 
-            "name": "LocalPasswordModuleID", 
-            "caption": "Local Secrets Module",
-            "validModules": [] 
+        {
+            "type": "ExpansionPanel",
+            "caption": "Global Configuration",
+            "items": [
+                { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode (Verbose Log)" },
+                { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
+                { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
+                {
+                    "type": "SelectInstance",
+                    "name": "LocalPasswordModuleID",
+                    "caption": "Local Secrets Module",
+                    "validModules": ["{7C5A3841-3F7B-4D2A-9E1C-5B6D8F9A0E12}"]
+                },
+                {
+                    "type": "Select",
+                    "name": "LocalServerKey",
+                    "caption": "Local Server Key (Used by Remote for Actions)",
+                    "options": []
+                }
+            ]
         },
-        { 
-            "type": "Select", 
-            "name": "RemoteServerKey", 
-            "caption": "Target Remote Server (Key)",
-            "options": [] 
-        },
-
-        { "type": "Label", "caption": "Reverse Control (Remote -> Local)" },
-        { "type": "Label", "caption": "Required for 'Remote Action'. The Remote System must have the Secrets Module installed." },
-        { "type": "NumberSpinner", "name": "RemotePasswordModuleID", "caption": "Remote Secrets Instance ID" },
-        { 
-            "type": "Select", 
-            "name": "LocalServerKey", 
-            "caption": "Local Server Key (used remotely)",
-            "options": [] 
-        },
-
-        { "type": "Label", "caption": "Mirror Anchors & Setup" },
-        { 
-            "type": "SelectObject", 
-            "name": "LocalRootID", 
-            "caption": "Local Root Object (Source)" 
-        },
-        { "type": "NumberSpinner", "name": "RemoteRootID", "caption": "Remote Data Target ID (Where variables go)" },
-        { "type": "NumberSpinner", "name": "RemoteScriptRootID", "caption": "Remote Script Home ID (Shared folder for scripts)" },
-        { 
-            "type": "Button", 
-            "caption": "Install/Update Remote Scripts", 
-            "onClick": "RS_InstallRemoteScripts($id);" 
-        },
-
-        { "type": "Label", "caption": "Selection" },
-        { "type": "Label", "caption": "Batch Tools (Set entire column)" },
-        { "type": "RowLayout", "items": [
-            { "type": "Label", "caption": "Sync:", "width": "40px" },
-            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Active', true);", "width": "50px" },
-            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Active', false);", "width": "50px" },
-            
-            { "type": "Label", "caption": " | Action:", "width": "60px" },
-            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Action', true);", "width": "50px" },
-            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Action', false);", "width": "50px" },
-
-            { "type": "Label", "caption": " | Delete:", "width": "60px" },
-            { "type": "Button", "caption": "All", "onClick": "RS_ToggleAll($id, 'Delete', true);", "width": "50px" },
-            { "type": "Button", "caption": "None", "onClick": "RS_ToggleAll($id, 'Delete', false);", "width": "50px" }
-        ]},
+        { "type": "Label", "caption": "Step 1: Define Remote Targets (Folders) & Connection" },
         {
             "type": "List",
-            "name": "SyncList",
-            "caption": "Objects to Sync",
-            "add": false,
-            "delete": false,
-            "rowCount": 20,
+            "name": "Targets",
+            "caption": "Remote Targets",
+            "rowCount": 5,
+            "add": true,
+            "delete": true,
             "columns": [
-                { "name": "ObjectID", "caption": "ID", "width": "70px", "edit": { "type": "Label" } },
-                { "name": "Name", "caption": "Variable Name", "width": "auto", "edit": { "type": "Label" } },
-                { "name": "Active", "caption": "Sync", "width": "50px", "edit": { "type": "CheckBox" } },
-                { "name": "Action", "caption": "R-Action", "width": "70px", "edit": { "type": "CheckBox" } },
-                { "name": "Delete", "caption": "Del Remote", "width": "80px", "edit": { "type": "CheckBox" } }
-            ],
-            "values": []
-        }
+                { "name": "Name", "caption": "Folder Name", "width": "150px", "add": "", "edit": { "type": "ValidationTextBox" } },
+                { "name": "RemoteKey", "caption": "Remote Server Key", "width": "200px", "add": "", "edit": { "type": "Select", "options": [] } },
+                { 
+                    "name": "RemoteRootID", "caption": "Data ID", "width": "120px", "add": 10000, 
+                    "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
+                },
+                { 
+                    "name": "RemoteScriptRootID", "caption": "Script ID", "width": "120px", "add": 10000, 
+                    "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
+                },
+                { 
+                    "name": "RemoteSecretsID", "caption": "Remote SEC ID", "width": "120px", "add": 10000, 
+                    "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
+                }
+            ]
+        },
+        { "type": "Label", "caption": "Step 2: Map Local Roots to Folders" },
+        {
+            "type": "List",
+            "name": "Roots",
+            "caption": "Local Source Roots",
+            "rowCount": 4,
+            "add": true,
+            "delete": true,
+            "columns": [
+                { "name": "LocalRootID", "caption": "Local Object (Source)", "width": "300px", "add": 0, "edit": { "type": "SelectObject" } },
+                { "name": "TargetFolder", "caption": "Assign to Folder", "width": "200px", "add": "", "edit": { "type": "Select", "options": [] } }
+            ]
+        },
+        { "type": "Label", "caption": "Step 3: Individual Selection per Target" }
+    ],
+    "actions": [
+        { "type": "Label", "caption": "________________________________________________________________________________" },
+        { "type": "Button", "caption": "Force Refresh UI", "onClick": "RSM_UpdateUI($id);" }
     ]
 }
