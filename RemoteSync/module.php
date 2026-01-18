@@ -215,48 +215,50 @@ class RemoteSync extends IPSModule
         }
     }
 
-public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
-{
-    $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
-    if (!is_array($data)) $data = [];
+    public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
+    {
+        $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
+        if (!is_array($data)) $data = [];
 
-    $map = [];
-    foreach ($data as $item) {
-        $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
-        $map[$key] = $item;
-    }
-
-    $foundVars = [];
-    $this->GetRecursiveVariables($LocalRootID, $foundVars);
-    
-    $uiValues = [];
-    foreach ($foundVars as $vID) {
-        $key = $Folder . '_' . $LocalRootID . '_' . $vID;
-        if (!isset($map[$key])) {
-            $map[$key] = [
-                "Folder" => $Folder,
-                "LocalRootID" => $LocalRootID,
-                "ObjectID" => $vID,
-                "Name" => IPS_GetName($vID),
-                "Active" => false, "Action" => false, "Delete" => false
-            ];
+        $map = [];
+        foreach ($data as $item) {
+            $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+            $map[$key] = $item;
         }
-        
-        $map[$key][$Column] = $State;
 
-        // --- NEUE LOGIK ---
-        // Wenn die Spalte "Delete" auf TRUE gesetzt wird, Sync (Active) ausschalten
-        if ($Column === 'Delete' && $State === true) {
-            $map[$key]['Active'] = false;
+        $foundVars = [];
+        $this->GetRecursiveVariables($LocalRootID, $foundVars);
+
+        $uiValues = [];
+        foreach ($foundVars as $vID) {
+            $key = $Folder . '_' . $LocalRootID . '_' . $vID;
+            if (!isset($map[$key])) {
+                $map[$key] = [
+                    "Folder" => $Folder,
+                    "LocalRootID" => $LocalRootID,
+                    "ObjectID" => $vID,
+                    "Name" => IPS_GetName($vID),
+                    "Active" => false,
+                    "Action" => false,
+                    "Delete" => false
+                ];
+            }
+
+            $map[$key][$Column] = $State;
+
+            // --- NEUE LOGIK ---
+            // Wenn die Spalte "Delete" auf TRUE gesetzt wird, Sync (Active) ausschalten
+            if ($Column === 'Delete' && $State === true) {
+                $map[$key]['Active'] = false;
+            }
+            // ------------------
+
+            $uiValues[] = $map[$key];
         }
-        // ------------------
 
-        $uiValues[] = $map[$key];
+        $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+        $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
     }
-
-    $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-    $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
-}
 
     // --- INSTALLATION ---
     public function InstallRemoteScripts(string $Folder)
@@ -391,30 +393,31 @@ public function ToggleAll(string $Column, bool $State, string $Folder, int $Loca
     public function RequestAction($Ident, $Value)
     {
         switch ($Ident) {
-case "UpdateRow":
-    $row = json_decode($Value, true);
-    if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
+            case "UpdateRow":
+                $row = json_decode($Value, true);
+                if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
 
-    // --- NEUE LOGIK ---
-    if ($row['Delete']) {
-        $row['Active'] = false;
-    }
-    // ------------------
+                // --- NEUE LOGIK ---
+                if ($row['Delete']) {
+                    $row['Active'] = false;
+                }
+                // ------------------
 
-    $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
-    if (!is_array($cache)) $cache = [];
+                $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
+                if (!is_array($cache)) $cache = [];
 
-    $map = [];
-    foreach ($cache as $item) {
-        $k = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
-        $map[$k] = $item;
-    }
+                $map = [];
+                foreach ($cache as $item) {
+                    $k = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+                    $map[$k] = $item;
+                }
 
-    $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
-    $map[$key] = $row;
+                $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
+                $map[$key] = $row;
 
-    $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-    break;
+                $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+                break;
+        }
     }
 
     public function SaveSelections()
