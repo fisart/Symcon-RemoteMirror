@@ -30,14 +30,14 @@
             "add": true,
             "delete": true,
             "columns": [
-                { "name": "Name", "caption": "Folder Name", "width": "150px", "add": "", "edit": { "type": "ValidationTextBox" } },
+                { "name": "Name", "caption": "Folder Name", "width": "auto", "add": "", "edit": { "type": "ValidationTextBox" } },
                 { "name": "RemoteKey", "caption": "Remote Server Key", "width": "auto", "add": "", "edit": { "type": "Select", "options": [] } },
                 { 
-                    "name": "RemoteScriptRootID", "caption": "Remote Script ID", "width": "120px", "add": 10000, 
+                    "name": "RemoteScriptRootID", "caption": "Remote Script ID", "width": "auto", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
                 },
                 { 
-                    "name": "RemoteSecretsID", "caption": "Remote SEC ID", "width": "120px", "add": 10000, 
+                    "name": "RemoteSecretsID", "caption": "Remote SEC ID", "width": "auto", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
                 }
             ]
@@ -52,9 +52,9 @@
             "delete": true,
             "columns": [
                 { "name": "LocalRootID", "caption": "Local Object (Source)", "width": "auto", "add": 0, "edit": { "type": "SelectObject" } },
-                { "name": "TargetFolder", "caption": "Assign to Folder", "width": "200px", "add": "", "edit": { "type": "Select", "options": [] } },
+                { "name": "TargetFolder", "caption": "Assign to Folder", "width": "auto", "add": "", "edit": { "type": "Select", "options": [] } },
                 { 
-                    "name": "RemoteRootID", "caption": "Remote Root ID", "width": "120px", "add": 10000, 
+                    "name": "RemoteRootID", "caption": "Remote Root ID", "width": "auto", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
                 }
             ]
