@@ -327,25 +327,24 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
-        // BEST PRACTICE: Warten bis der Kernel bereit ist, um "InstanceInterface not available" zu verhindern
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
         parent::ApplyChanges();
 
+        // WICHTIG: Interne Konfiguration zurücksetzen, damit sie neu geladen wird
         $this->rpcClient = null;
+        $this->config = [];
 
-        // Zustände zurücksetzen (Original-Logik)
         $this->WriteAttributeBoolean('_IsSending', false);
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
-        // ÄNDERUNG: Wir nutzen das Attribut als primäre Quelle für die Auswahl, 
-        // da SaveSelections dieses zukünftig befüllt, ohne die Instanz neu zu starten.
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
 
-        // Initial-Fallback: Falls das Attribut noch leer ist (Neuinstallation), aus Property laden
-        if ($syncListRaw === "[]" || $syncListRaw === "") {
+        // Korrigierter Fallback: Nur wenn das Attribut wirklich noch nie gesetzt wurde (leer)
+        // Wir prüfen NICHT auf "[]", da dies eine gültige leere Auswahl ist.
+        if ($syncListRaw === "") {
             $syncListRaw = $this->ReadPropertyString("SyncList");
             $this->WriteAttributeString("SyncListCache", $syncListRaw);
         }
@@ -355,11 +354,13 @@ class RemoteSync extends IPSModule
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
-        // Alle alten Nachrichten-Registrierungen löschen (Original-Logik)
+        // Alle alten Nachrichten-Registrierungen löschen
         $messages = $this->GetMessageList();
-        foreach ($messages as $senderID => $messageID) $this->UnregisterMessage($senderID, VM_UPDATE);
+        foreach ($messages as $senderID => $messageID) {
+            // Wir unregistrieren nur VM_UPDATE Nachrichten
+            $this->UnregisterMessage($senderID, VM_UPDATE);
+        }
 
-        // Variablen aus der konsolidierten Manager-Liste registrieren (jetzt basierend auf Attribut)
         $count = 0;
         $hasDeleteTask = false;
         if (is_array($syncList)) {
@@ -367,11 +368,8 @@ class RemoteSync extends IPSModule
                 $isDelete = !empty($item['Delete']);
                 $isActive = !empty($item['Active']);
 
-                if ($isDelete) {
-                    $hasDeleteTask = true;
-                }
+                if ($isDelete) $hasDeleteTask = true;
 
-                // NUR registrieren, wenn aktiv UND NICHT zum löschen markiert
                 if ($isActive && !$isDelete && isset($item['ObjectID']) && IPS_ObjectExists((int)$item['ObjectID'])) {
                     $this->RegisterMessage((int)$item['ObjectID'], VM_UPDATE);
                     $count++;
@@ -379,16 +377,13 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // Status-Management (Original-Logik angepasst auf count)
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104); // Inaktiv
+            $this->SetStatus(104);
         } else {
-            $this->SetStatus(102); // Aktiv
-            // Timer starten, wenn Variablen aktiv sind ODER eine Löschung ansteht
+            $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
-            $this->LogDebug("ApplyChanges: Registered $count variables. Deletion tasks pending: " . ($hasDeleteTask ? "Yes" : "No"));
         }
     }
 
