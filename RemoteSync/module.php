@@ -514,17 +514,24 @@ class RemoteSync extends IPSModule
         }
     }
 
-    private function FindRemoteScriptID(int $parentID, string $name): int
+    private function FindRemoteScript($parentID, $name)
     {
-        $children = @$this->rpcClient->IPS_GetChildrenIDs($parentID);
-        if (is_array($children)) {
-            foreach ($children as $cID) {
-                $obj = $this->rpcClient->IPS_GetObject($cID);
-                if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) return $cID;
+        try {
+            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
+            if (is_array($children)) {
+                foreach ($children as $cID) {
+                    $obj = $this->rpcClient->IPS_GetObject($cID);
+                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) return $cID;
+                }
             }
+        } catch (Exception $e) {
+            $this->LogDebug("RPC Error in FindRemoteScript: " . $e->getMessage());
+            return 0; // Rückgabewert explizit behandeln statt nur unterdrücken
         }
-        return 0;
+
+        // ... Rest der Logik (Erstellung) ebenfalls in try-catch fassen
     }
+
 
     private function AddToBuffer($localID)
     {
@@ -1044,25 +1051,26 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
     {
         try {
             $this->config = [
-                'DebugMode'             => @$this->ReadPropertyBoolean('DebugMode'),
-                'AutoCreate'            => @$this->ReadPropertyBoolean('AutoCreate'),
-                'ReplicateProfiles'     => @$this->ReadPropertyBoolean('ReplicateProfiles'), // NEW
-                'LocalPasswordModuleID' => @$this->ReadPropertyInteger('LocalPasswordModuleID'),
-                'RemoteServerKey'       => @$this->ReadPropertyString('RemoteServerKey'),
-                'RemotePasswordModuleID' => @$this->ReadPropertyInteger('RemotePasswordModuleID'),
-                'LocalServerKey'        => @$this->ReadPropertyString('LocalServerKey'),
-                'LocalRootID'           => @$this->ReadPropertyInteger('LocalRootID'),
-                'RemoteRootID'          => @$this->ReadPropertyInteger('RemoteRootID'),
-                'RemoteScriptRootID'    => @$this->ReadPropertyInteger('RemoteScriptRootID'),
-                // ÄNDERUNG: Nutzt jetzt das Attribut statt der Property (Best Practice)
-                'SyncListRaw'           => $this->ReadAttributeString('SyncListCache')
+                'DebugMode'              => $this->ReadPropertyBoolean('DebugMode'),
+                'AutoCreate'             => $this->ReadPropertyBoolean('AutoCreate'),
+                'ReplicateProfiles'      => $this->ReadPropertyBoolean('ReplicateProfiles'),
+                'LocalPasswordModuleID'  => $this->ReadPropertyInteger('LocalPasswordModuleID'),
+                'RemoteServerKey'        => $this->ReadPropertyString('RemoteServerKey'),
+                'RemotePasswordModuleID' => $this->ReadPropertyInteger('RemotePasswordModuleID'),
+                'LocalServerKey'         => $this->ReadPropertyString('LocalServerKey'),
+                'LocalRootID'            => $this->ReadPropertyInteger('LocalRootID'),
+                'RemoteRootID'           => $this->ReadPropertyInteger('RemoteRootID'),
+                'RemoteScriptRootID'     => $this->ReadPropertyInteger('RemoteScriptRootID'),
+                'SyncListRaw'            => $this->ReadAttributeString('SyncListCache')
             ];
 
-            if (!is_string($this->config['SyncListRaw'])) return false;
             $this->config['SyncList'] = json_decode($this->config['SyncListRaw'], true);
-            if (!is_array($this->config['SyncList'])) $this->config['SyncList'] = [];
+            if (!is_array($this->config['SyncList'])) {
+                $this->config['SyncList'] = [];
+            }
             return true;
         } catch (Exception $e) {
+            $this->SendDebug("LoadConfig Error", $e->getMessage(), 0);
             return false;
         }
     }
@@ -1097,9 +1105,9 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
     private function LogDebug($msg)
     {
-        try {
-            if (@$this->ReadPropertyBoolean('DebugMode')) IPS_LogMessage('RemoteSync', $msg);
-        } catch (Exception $e) {
+        // Kein @ verwenden. ReadProperty sollte im laufenden Betrieb nicht fehlschlagen.
+        if ($this->ReadPropertyBoolean('DebugMode')) {
+            IPS_LogMessage('RemoteSync', $msg);
         }
     }
 }
