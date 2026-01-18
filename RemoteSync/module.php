@@ -144,14 +144,19 @@ class RemoteSync extends IPSModule
                         "items" => [
                             ["type" => "Label", "caption" => "Batch Tools:", "bold" => true, "width" => "90px"],
 
-                            // Sync Gruppe (Parameter $localRootID hinzugefügt)
+                            // Sync Gruppe
                             ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
-                            // Action Gruppe (Parameter $localRootID hinzugefügt)
+                            // Action Gruppe
                             ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Label", "caption" => "|", "width" => "15px"],
+
+                            // NEU: Delete Gruppe
+                            ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // Management & Installation
