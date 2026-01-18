@@ -305,7 +305,31 @@ class RemoteSync extends IPSModule
 
         return $id;
     }
+    private function FindRemoteScript(int $parentID, string $name): int
+    {
+        try {
+            // 1. Suche nach existierendem Skript
+            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
+            if (is_array($children)) {
+                foreach ($children as $cID) {
+                    $obj = $this->rpcClient->IPS_GetObject($cID);
+                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) {
+                        return $cID;
+                    }
+                }
+            }
 
+            // 2. Erstellung, falls nicht gefunden
+            $id = $this->rpcClient->IPS_CreateScript(0);
+            $this->rpcClient->IPS_SetParent($id, $parentID);
+            $this->rpcClient->IPS_SetName($id, $name);
+
+            return $id;
+        } catch (Exception $e) {
+            $this->LogDebug("RPC Error in FindRemoteScript: " . $e->getMessage());
+            return 0;
+        }
+    }
 
     // --- RUNTIME ---
 
@@ -500,31 +524,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    private function FindRemoteScript(int $parentID, string $name): int
-    {
-        try {
-            // 1. Suche nach existierendem Skript
-            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
-            if (is_array($children)) {
-                foreach ($children as $cID) {
-                    $obj = $this->rpcClient->IPS_GetObject($cID);
-                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) {
-                        return $cID;
-                    }
-                }
-            }
 
-            // 2. Erstellung, falls nicht gefunden
-            $id = $this->rpcClient->IPS_CreateScript(0);
-            $this->rpcClient->IPS_SetParent($id, $parentID);
-            $this->rpcClient->IPS_SetName($id, $name);
-
-            return $id;
-        } catch (Exception $e) {
-            $this->LogDebug("RPC Error in FindRemoteScript: " . $e->getMessage());
-            return 0;
-        }
-    }
 
 
     private function AddToBuffer($localID)
