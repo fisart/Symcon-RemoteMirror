@@ -272,13 +272,13 @@ class RemoteSync extends IPSModule
         $remoteSecID = (int)$target['RemoteSecretsID'];
 
         try {
-            $gwID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Gateway");
+            $gwID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Gateway");
             $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
 
             $gwCode = $this->GenerateGatewayCode($remoteSecID);
             $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
-            $rxID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Receiver");
+            $rxID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Receiver");
             $this->SendDebug("RS_Install", "Receiver Script located/created at ID: " . $rxID, 0);
 
             $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
@@ -290,21 +290,8 @@ class RemoteSync extends IPSModule
             echo "Error: " . $e->getMessage();
         }
     }
-    private function FindOrCreateRemoteScript(int $parentID, string $name): int
-    {
-        // 1. Zuerst prüfen, ob das Skript bereits existiert (nutzt die bereits vorhandene FindRemoteScriptID)
-        $id = $this->FindRemoteScriptID($parentID, $name);
-        if ($id > 0) {
-            return $id;
-        }
 
-        // 2. Wenn es nicht existiert, auf dem Remote-System via RPC neu erstellen
-        $id = $this->rpcClient->IPS_CreateScript(0);
-        $this->rpcClient->IPS_SetParent($id, $parentID);
-        $this->rpcClient->IPS_SetName($id, $name);
 
-        return $id;
-    }
     private function FindRemoteScript(int $parentID, string $name): int
     {
         try {
@@ -646,7 +633,7 @@ class RemoteSync extends IPSModule
                     'Profiles'   => $profiles
                 ];
 
-                $receiverID = $this->FindRemoteScriptID((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
+                $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
                 if ($receiverID > 0) {
                     $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
                 }
