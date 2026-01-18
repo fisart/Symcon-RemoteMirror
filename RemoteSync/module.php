@@ -470,7 +470,7 @@ class RemoteSync extends IPSModule
                 if (!IPS_ObjectExists($localID)) continue;
                 $var = IPS_GetVariable($localID);
 
-                // PAYLOAD GENERIERUNG: Exakt identisch zum Original
+                // PAYLOAD GENERIERUNG: Exakt identisch zu Ihrem Original (Zeile 263-286)
                 $payload = [
                     'LocalID' => $localID,
                     'Value'   => GetValue($localID),
@@ -478,12 +478,12 @@ class RemoteSync extends IPSModule
                     'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
                     'Name'    => IPS_GetName($localID),
                     'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
-                    'Key'     => $this->ReadPropertyString("LocalServerKey"), // Globaler Key aus Create
+                    'Key'     => $this->ReadPropertyString("LocalServerKey"), // Globaler Key
                     'Action'  => !empty($item['Action']),
                     'Delete'  => !empty($item['Delete'])
                 ];
 
-                // Pfad-Berechnung relativ zum folder-spezifischen Root
+                // Pfad-Berechnung relativ zum folder-spezifischen Root (Ihre Original-Logik)
                 $pathStack = [];
                 $currentID = $localID;
                 while ($currentID != $localRootID && $currentID > 0) {
@@ -492,7 +492,7 @@ class RemoteSync extends IPSModule
                 }
                 $payload['Path'] = $pathStack;
 
-                // Im Buffer unter dem Folder ablegen
+                // Im gruppierten Buffer unter dem Folder-Namen ablegen
                 $buffer[$folderName][$localID] = $payload;
             }
         }
@@ -503,6 +503,7 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
+        // Sperre prüfen (Ihre Original-Logik)
         if ($this->ReadAttributeBoolean('_IsSending')) return;
         $this->SetTimerInterval('BufferTimer', 0);
 
@@ -523,7 +524,7 @@ class RemoteSync extends IPSModule
 
                 $batch = array_values($variables);
 
-                // 3. Profile sammeln (Original-Logik)
+                // 3. Profile sammeln (Ihre Original-Logik Zeile 344 ff.)
                 $profiles = [];
                 if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                     foreach ($batch as $item) {
@@ -535,7 +536,7 @@ class RemoteSync extends IPSModule
                     }
                 }
 
-                // 4. Paket schnüren
+                // 4. Paket schnüren (Ihre Original-Struktur)
                 $packet = [
                     'TargetID'   => (int)$target['RemoteRootID'],
                     'Batch'      => $batch,
@@ -551,7 +552,7 @@ class RemoteSync extends IPSModule
                 }
             }
 
-            // Buffer erst leeren, wenn alle Folder abgearbeitet wurden
+            // Buffer erst leeren, wenn alle Ziele bedient wurden
             $this->WriteAttributeString('_BatchBuffer', '[]');
         } catch (Exception $e) {
             $this->LogDebug("Flush Error: " . $e->getMessage());
