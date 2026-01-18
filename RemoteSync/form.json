@@ -63,6 +63,6 @@
     ],
 "actions": [
         { "type": "Label", "caption": "________________________________________________________________________________" },
-        { "type": "Button", "caption": "Force Refresh UI", "onClick": "ReloadForm($id);" }
+{ "type": "Button", "caption": "Force Refresh UI", "onClick": "RS_UpdateUI($id);" }
     ]
 }

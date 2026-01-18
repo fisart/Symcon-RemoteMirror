@@ -50,6 +50,12 @@ class RemoteSync extends IPSModule
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
 
+
+    public function UpdateUI()
+    {
+        $this->ReloadForm();
+    }
+
     // --- FORM & UI ---
     public function GetConfigurationForm()
     {
