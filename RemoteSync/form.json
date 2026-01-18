@@ -61,8 +61,8 @@
         },
         { "type": "Label", "caption": "Step 3: Individual Selection per Target" }
     ],
-    "actions": [
+"actions": [
         { "type": "Label", "caption": "________________________________________________________________________________" },
-        { "type": "Button", "caption": "Force Refresh UI", "onClick": "RSM_UpdateUI($id);" }
+        { "type": "Button", "caption": "Force Refresh UI", "onClick": "ReloadForm($id);" }
     ]
 }
