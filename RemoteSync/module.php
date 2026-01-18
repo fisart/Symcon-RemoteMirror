@@ -53,7 +53,7 @@ class RemoteSync extends IPSModule
     // --- FORM & UI ---
     public function GetConfigurationForm()
     {
-        // Sicherstellen, dass der RAM-Arbeitsspeicher beim Start gefüllt ist
+        // Sicherstellen, dass der RAM-Arbeitsspeicher (Blueprint) beim Start gefüllt ist
         if ($this->ReadAttributeString("SyncListCache") === "[]") {
             $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
         }
@@ -61,7 +61,7 @@ class RemoteSync extends IPSModule
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
 
         // Statische Footer-Buttons (z.B. Refresh) aus der Datei zwischenspeichern
-        $staticFooter = $form['actions'];
+        $staticFooter = isset($form['actions']) ? $form['actions'] : [];
         $form['actions'] = [];
 
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
@@ -99,7 +99,7 @@ class RemoteSync extends IPSModule
             $folderName = $target['Name'];
             $syncValues = [];
 
-            // Alle Variablen finden, die diesem Folder über Schritt 2 zugeordnet sind
+            // Variablen-Scan für diesen Folder
             foreach ($roots as $root) {
                 if (isset($root['TargetFolder']) && $root['TargetFolder'] === $folderName && isset($root['LocalRootID']) && $root['LocalRootID'] > 0 && IPS_ObjectExists($root['LocalRootID'])) {
                     $foundVars = [];
@@ -119,7 +119,7 @@ class RemoteSync extends IPSModule
             }
 
             $listName = "List_" . md5($folderName);
-            // BLUEPRINT: Datenübertragung bei Einzelklick via RequestAction
+            // BLUEPRINT: Datenübertragung bei Einzelklick via RequestAction (Präfix RS)
             $onEdit = "IPS_RequestAction(\$id, 'UpdateRow', json_encode(\$$listName));";
 
             $form['actions'][] = [
@@ -129,11 +129,24 @@ class RemoteSync extends IPSModule
                     [
                         "type" => "RowLayout",
                         "items" => [
-                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName');", "width" => "90px"],
-                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName');", "width" => "90px"],
+                            ["type" => "Label", "caption" => "Batch Tools:", "bold" => true, "width" => "90px"],
+
+                            // Sync Gruppe
+                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName');", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName');", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
-                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName');", "width" => "90px"],
+
+                            // Action Gruppe
+                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName');", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName');", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
+
+                            // Delete Gruppe
+                            ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, '$folderName');", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, '$folderName');", "width" => "85px"],
+                            ["type" => "Label", "caption" => "|", "width" => "15px"],
+
+                            // Management
                             ["type" => "Button", "caption" => "💾 SAVE ALL SETS", "onClick" => "RS_SaveSelections(\$id);", "width" => "130px", "confirm" => "Save all pending changes for all targets?"],
                             ["type" => "Button", "caption" => "INSTALL REMOTE", "onClick" => "RS_InstallRemoteScripts(\$id, '$folderName');"]
                         ]
@@ -165,14 +178,16 @@ class RemoteSync extends IPSModule
 
         return json_encode($form);
     }
-
     // Hilfsfunktion zum rekursiven Befüllen der statischen Formular-Elemente
     private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
     {
         foreach ($elements as &$element) {
             if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions);
             if (!isset($element['name'])) continue;
+
+            // Globaler Key (falls vorhanden) oder Key in der Targets-Liste
             if ($element['name'] === 'LocalServerKey') $element['options'] = $serverOptions;
+
             if ($element['name'] === 'Targets') {
                 foreach ($element['columns'] as &$col) {
                     if ($col['name'] === 'RemoteKey') $col['edit']['options'] = $serverOptions;
