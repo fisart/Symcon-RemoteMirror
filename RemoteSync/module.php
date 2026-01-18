@@ -271,7 +271,7 @@ class RemoteSync extends IPSModule
             $gwID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Gateway");
             $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
 
-            $gwCode = sprintf($this->GenerateGatewayCode(), $remoteSecID);
+            $gwCode = $this->GenerateGatewayCode($remoteSecID);
             $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
             $rxID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Receiver");
@@ -810,7 +810,7 @@ foreach (\$batch as \$item) {
 
     private function GenerateGatewayCode()
     {
-        $remSecID = (int)$this->config['RemotePasswordModuleID'];
+
 
         return "<?php
 /* RemoteSync Gateway */
