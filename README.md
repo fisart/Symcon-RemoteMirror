@@ -96,6 +96,43 @@ Feingranulare Auswahl der Variablen innerhalb der definierten Mappings. Die Grup
 | **UI-Szenario** | Ein System ersetzt ein anderes. | **Unified UI:** Viele Systeme in einer Oberfläche. |
 | **Kosten** | Kostenpflichtige Extension. | Kostenloses PHP-Modul. |
 
+Hier ist die ergänzte Zusammenfassung für deine Dokumentation, die den entscheidenden Unterschied zwischen dem nativen „Voll-Import“ und deinem „selektiven Push“ hervorhebt.
+
+---
+
+### **Zusammenfassung: RemoteSync (RS) vs. Natives Sync Remote**
+
+**Das Kernkonzept: Selective-Push vs. Full-Inclusion**
+Während das native IP-Symcon Modul „Sync Remote“ (ab v7.1) darauf ausgelegt ist, einen entfernten Client **vollständig** in einen Server zu integrieren (Full-Inclusion), verfolgt **RemoteSync** den Ansatz des **Selective-Push**. 
+
+Hierbei bestimmt die Quelle chirurgisch genau, welche Daten geteilt werden. Dies macht RemoteSync zur idealen Lösung für die **System-Föderation** und den Aufbau von **Zentral-Dashboards**.
+
+#### **Die wichtigsten Unterschiede im Überblick**
+
+| Merkmal | IP-Symcon "Sync Remote" (Nativ) | RemoteSync (Dieses Modul) |
+| :--- | :--- | :--- |
+| **Philosophie** | **Full-Inclusion:** Der Server "holt" sich den gesamten Objektbaum des Clients. | **Selective-Push:** Die Quelle "sendet" nur explizit gewählte Variablen an das Ziel. |
+| **Richtung** | Server zieht vom Client (Pull). | Quelle drückt zum Ziel (Push). |
+| **Ressourcen** | Hohe Last durch Synchronisation des gesamten Baums. | Extrem effizient durch Batch-Verarbeitung nur gewählter Daten. |
+| **Anwendung** | Master-Slave Integration ganzer Systeme. | **Unified Dashboard:** N:1 Kopplung vieler Standorte. |
+| **Kosten** | Kostenpflichtige Lizenz-Erweiterung. | Kostenloses PHP-Modul. |
+
+#### **Der entscheidende Vorteil: Das Unified Dashboard (N:1)**
+Der größte Mehrwert von RemoteSync liegt in der Möglichkeit, ein **zentrales User-Interface (Symcon UI / IPSView)** für beliebig viele verteilte Systeme zu erstellen:
+
+1.  **Zentralisierung:** Daten von 10 verschiedenen Standorten können auf einem einzigen, kostengünstigen Visualisierungs-Server zusammengeführt werden.
+2.  **Volle Interaktivität:** Dank der injizierten Gateway-Logik sind entfernte Variablen im zentralen Dashboard nicht nur sichtbar, sondern verhalten sich wie lokale Geräte (inkl. Rücksteuerung per `RequestAction`).
+3.  **Datenschutz & Kontrolle:** Im Gegensatz zum Voll-Import verbleibt die Datenhoheit beim Quellsystem. Es wird nur das übertragen, was für die Zentrale relevant ist.
+4.  **Effizienz:** Durch die Batch-Übertragung und den Verzicht auf den Import tausender irrelevanter System-Objekte bleibt die Performance der Visualisierung auch bei schmalbandigen Verbindungen (z. B. LTE) erhalten.
+
+**Fazit**
+RemoteSync ist kein Ersatz für ein Full-Recovery-Szenario, sondern das spezialisierte Werkzeug für Anwender, die **unabhängige Systeme intelligent vernetzen** und in einer **gemeinsamen Oberfläche steuern** wollen.
+
+---
+
+Diese Zusammenfassung macht sofort klar, warum man sich trotz einer nativen Lösung für dein Modul entscheiden sollte: **Effizienz, Selektivität und Kostenfreiheit.**
+
+
 ## 6. Sicherheitshinweise
 *   **Secrets Manager:** Das Modul speichert keine Passwörter. Alle Credentials werden über das SEC-Modul (Password Vault) bezogen.
 *   **Verschlüsselung:** Die Kommunikation erfolgt ausschließlich über TLS-verschlüsseltes HTTPS.
