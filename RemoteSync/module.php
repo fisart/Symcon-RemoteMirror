@@ -215,41 +215,48 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
-    {
-        $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
-        if (!is_array($data)) $data = [];
+public function ToggleAll(string $Column, bool $State, string $Folder, int $LocalRootID)
+{
+    $data = json_decode($this->ReadAttributeString("SyncListCache"), true);
+    if (!is_array($data)) $data = [];
 
-        $map = [];
-        foreach ($data as $item) {
-            $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
-            $map[$key] = $item;
-        }
-
-        $foundVars = [];
-        $this->GetRecursiveVariables($LocalRootID, $foundVars);
-
-        $uiValues = [];
-        foreach ($foundVars as $vID) {
-            $key = $Folder . '_' . $LocalRootID . '_' . $vID;
-            if (!isset($map[$key])) {
-                $map[$key] = [
-                    "Folder" => $Folder,
-                    "LocalRootID" => $LocalRootID,
-                    "ObjectID" => $vID,
-                    "Name" => IPS_GetName($vID),
-                    "Active" => false,
-                    "Action" => false,
-                    "Delete" => false
-                ];
-            }
-            $map[$key][$Column] = $State;
-            $uiValues[] = $map[$key];
-        }
-
-        $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-        $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
+    $map = [];
+    foreach ($data as $item) {
+        $key = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+        $map[$key] = $item;
     }
+
+    $foundVars = [];
+    $this->GetRecursiveVariables($LocalRootID, $foundVars);
+    
+    $uiValues = [];
+    foreach ($foundVars as $vID) {
+        $key = $Folder . '_' . $LocalRootID . '_' . $vID;
+        if (!isset($map[$key])) {
+            $map[$key] = [
+                "Folder" => $Folder,
+                "LocalRootID" => $LocalRootID,
+                "ObjectID" => $vID,
+                "Name" => IPS_GetName($vID),
+                "Active" => false, "Action" => false, "Delete" => false
+            ];
+        }
+        
+        $map[$key][$Column] = $State;
+
+        // --- NEUE LOGIK ---
+        // Wenn die Spalte "Delete" auf TRUE gesetzt wird, Sync (Active) ausschalten
+        if ($Column === 'Delete' && $State === true) {
+            $map[$key]['Active'] = false;
+        }
+        // ------------------
+
+        $uiValues[] = $map[$key];
+    }
+
+    $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+    $this->UpdateFormField("List_" . md5($Folder . $LocalRootID), "values", json_encode($uiValues));
+}
 
     // --- INSTALLATION ---
     public function InstallRemoteScripts(string $Folder)
@@ -384,40 +391,30 @@ class RemoteSync extends IPSModule
     public function RequestAction($Ident, $Value)
     {
         switch ($Ident) {
-            case "UpdateRow":
-                $row = json_decode($Value, true);
-                // NEU: Prüfung auf LocalRootID hinzugefügt
-                if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
+case "UpdateRow":
+    $row = json_decode($Value, true);
+    if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
 
-                // Aktuellen RAM-Stand laden
-                $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
-                if (!is_array($cache)) $cache = [];
+    // --- NEUE LOGIK ---
+    if ($row['Delete']) {
+        $row['Active'] = false;
+    }
+    // ------------------
 
-                $map = [];
-                foreach ($cache as $item) {
-                    // NEU: Key-Bildung inklusive LocalRootID für absolute Eindeutigkeit
-                    $f = $item['Folder'] ?? '';
-                    $r = $item['LocalRootID'] ?? 0;
-                    $o = $item['ObjectID'] ?? 0;
-                    $map[$f . '_' . $r . '_' . $o] = $item;
-                }
+    $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
+    if (!is_array($cache)) $cache = [];
 
-                // Geänderte Zeile in die Map einfügen/aktualisieren
-                $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
-                $map[$key] = [
-                    "Folder"      => $row['Folder'],
-                    "LocalRootID" => $row['LocalRootID'], // NEU: Wird mitgespeichert
-                    "ObjectID"    => $row['ObjectID'],
-                    "Name"        => $row['Name'],
-                    "Active"      => $row['Active'],
-                    "Action"      => $row['Action'],
-                    "Delete"      => $row['Delete']
-                ];
+    $map = [];
+    foreach ($cache as $item) {
+        $k = ($item['Folder'] ?? '') . '_' . ($item['LocalRootID'] ?? 0) . '_' . ($item['ObjectID'] ?? 0);
+        $map[$k] = $item;
+    }
 
-                // Zurück in den RAM-Speicher (Attribut) schreiben
-                $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
-                break;
-        }
+    $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
+    $map[$key] = $row;
+
+    $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
+    break;
     }
 
     public function SaveSelections()
