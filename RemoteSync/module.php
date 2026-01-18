@@ -286,7 +286,21 @@ class RemoteSync extends IPSModule
             echo "Error: " . $e->getMessage();
         }
     }
+    private function FindOrCreateRemoteScript(int $parentID, string $name): int
+    {
+        // 1. Zuerst prüfen, ob das Skript bereits existiert (nutzt die bereits vorhandene FindRemoteScriptID)
+        $id = $this->FindRemoteScriptID($parentID, $name);
+        if ($id > 0) {
+            return $id;
+        }
 
+        // 2. Wenn es nicht existiert, auf dem Remote-System via RPC neu erstellen
+        $id = $this->rpcClient->IPS_CreateScript(0);
+        $this->rpcClient->IPS_SetParent($id, $parentID);
+        $this->rpcClient->IPS_SetName($id, $name);
+
+        return $id;
+    }
     private function FindRemoteScript($parentID, $name)
     {
         $children = @$this->rpcClient->IPS_GetChildrenIDs($parentID);
