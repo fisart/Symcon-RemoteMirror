@@ -243,39 +243,46 @@ class RemoteSync extends IPSModule
     }
 
     // --- INSTALLATION ---
-    public function InstallRemoteScripts()
+    public function InstallRemoteScripts(string $Folder)
     {
-        if (!$this->LoadConfig()) return;
-        if (!$this->InitConnection()) return;
+        $this->SendDebug("RS_Install", "Button clicked for Folder: " . $Folder, 0);
 
-        $remoteRoot = $this->config['RemoteRootID'];
-        $scriptRoot = $this->config['RemoteScriptRootID']; // Use Shared Folder
-
-        if ($remoteRoot == 0) {
-            echo "Error: Remote Data Target ID is 0.";
+        $target = $this->GetTargetConfig($Folder);
+        if (!$target) {
+            $this->SendDebug("RS_Error", "Could not find config for folder name: " . $Folder, 0);
+            echo "Error: Configuration for '$Folder' not found.";
             return;
         }
-        if ($scriptRoot == 0) {
-            echo "Error: Remote Script Home ID is 0. Please select a folder on the remote server for scripts.";
+
+        $this->SendDebug("RS_Install", "Target Config found. Key: " . $target['RemoteKey'], 0);
+
+        if (!$this->InitConnectionForFolder($target)) {
+            $this->SendDebug("RS_Error", "Connection establishment failed.", 0);
+            echo "Error: Connection failed. Check SEC-Key and SEC-Instance.";
             return;
         }
+
+        $this->SendDebug("RS_Install", "Connection established. Attempting to locate/create scripts...", 0);
+
+        $scriptRoot = (int)$target['RemoteScriptRootID'];
+        $remoteSecID = (int)$target['RemoteSecretsID'];
 
         try {
-            // Install into Shared Script Root
-            $gatewayID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Gateway");
-            $gatewayCode = $this->GenerateGatewayCode();
-            $this->rpcClient->IPS_SetScriptContent($gatewayID, $gatewayCode);
-            $this->WriteAttributeInteger('_RemoteGatewayID', $gatewayID);
-            $this->LogDebug("Remote Gateway Script installed/updated at ID $gatewayID");
+            $gwID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Gateway");
+            $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
 
-            $receiverID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Receiver");
-            $receiverCode = $this->GenerateReceiverCode($gatewayID);
-            $this->rpcClient->IPS_SetScriptContent($receiverID, $receiverCode);
-            $this->WriteAttributeInteger('_RemoteReceiverID', $receiverID);
-            $this->LogDebug("Remote Receiver Script installed/updated at ID $receiverID");
+            $gwCode = sprintf($this->GenerateGatewayCode(), $remoteSecID);
+            $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
-            echo "Success: Shared Scripts installed.";
+            $rxID = $this->FindOrCreateRemoteScript($scriptRoot, "RemoteSync_Receiver");
+            $this->SendDebug("RS_Install", "Receiver Script located/created at ID: " . $rxID, 0);
+
+            $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
+
+            $this->SendDebug("RS_Install", "Scripts successfully updated on Remote System.", 0);
+            echo "Success: Scripts installed on $Folder";
         } catch (Exception $e) {
+            $this->SendDebug("RS_Error", "Exception during Install: " . $e->getMessage(), 0);
             echo "Error: " . $e->getMessage();
         }
     }
@@ -413,23 +420,49 @@ class RemoteSync extends IPSModule
     {
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
         $key = $target['RemoteKey'] ?? '';
-        if ($secID == 0 || $key === '') return false;
+
+        $this->SendDebug("RS_Connect", "Requesting SEC-ID: $secID for Key: $key", 0);
+
+        if ($secID == 0 || $key === '') {
+            $this->SendDebug("RS_Error", "SEC-ID is 0 or RemoteKey is empty.", 0);
+            return false;
+        }
 
         try {
-            if (!function_exists('SEC_GetSecret')) return false;
+            if (!function_exists('SEC_GetSecret')) {
+                $this->SendDebug("RS_Error", "Function SEC_GetSecret not found. Is the Secrets Module installed?", 0);
+                return false;
+            }
+
             $json = SEC_GetSecret($secID, $key);
+            $this->SendDebug("RS_Connect", "Data received from SEC: " . $json, 0);
+
             $config = json_decode($json, true);
-            if (!is_array($config)) return false;
+            if (!is_array($config)) {
+                $this->SendDebug("RS_Error", "JSON from SEC is invalid or empty.", 0);
+                return false;
+            }
 
-            $url = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? null;
-            $user = $config['User'] ?? $config['user'] ?? $config['Username'] ?? null;
-            $pw = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? null;
-            if (!$url) return false;
+            // Wir prüfen verschiedene Schreibweisen (Groß/Klein), um robust zu sein
+            $urlRaw = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? '';
+            $user   = $config['User'] ?? $config['user'] ?? $config['Username'] ?? '';
+            $pw     = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? '';
 
-            $connectionUrl = 'https://' . urlencode($user) . ":" . urlencode($pw) . "@" . $url . "/api/";
-            $this->rpcClient = new RemoteSync_RPCClient($connectionUrl); // Hier Ihren Original-Klassennamen nutzen
+            if ($urlRaw === '') {
+                $this->SendDebug("RS_Error", "URL field missing in SEC data.", 0);
+                return false;
+            }
+
+            $connectionUrl = 'https://' . urlencode($user) . ":" . urlencode($pw) . "@" . $urlRaw . "/api/";
+
+            // WICHTIG: Hier muss der Name Ihrer Klasse am Ende der Datei stehen!
+            // Falls Ihre Klasse am Ende 'RemoteSync_RPCClient' heißt, muss das hier stehen:
+            $this->rpcClient = new RemoteSync_RPCClient($connectionUrl);
+
+            $this->SendDebug("RS_Connect", "RPC Client initialized for URL: " . $urlRaw, 0);
             return true;
         } catch (Exception $e) {
+            $this->SendDebug("RS_Error", "Exception in InitConnection: " . $e->getMessage(), 0);
             return false;
         }
     }
