@@ -808,7 +808,7 @@ foreach (\$batch as \$item) {
     }
 
 
-    private function GenerateGatewayCode()
+    private function GenerateGatewayCode(int $remSecID)
     {
 
 
