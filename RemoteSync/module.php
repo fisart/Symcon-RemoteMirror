@@ -582,14 +582,32 @@ class RemoteSync extends IPSModule
 
     private function IsChildOf(int $objectID, int $parentID): bool
     {
-        if ($objectID === $parentID) return true;
+        // Wenn die IDs identisch sind, ist es ein Treffer
+        if ($objectID === $parentID) {
+            return true;
+        }
+
+        // BEST PRACTICE: Vor dem ersten Zugriff prüfen, ob das Objekt überhaupt existiert
+        if (!IPS_ObjectExists($objectID)) {
+            return false;
+        }
+
+        // Den Baum nach oben wandern
         while ($objectID > 0) {
             $objectID = IPS_GetParent($objectID);
-            if ($objectID === $parentID) return true;
+
+            if ($objectID === $parentID) {
+                return true;
+            }
+
+            // Falls wir auf der Reise nach oben ein ungültiges Objekt finden, abbrechen
+            if ($objectID > 0 && !IPS_ObjectExists($objectID)) {
+                return false;
+            }
         }
+
         return false;
     }
-
 
     public function FlushBuffer()
     {
