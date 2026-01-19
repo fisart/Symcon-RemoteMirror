@@ -327,77 +327,98 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
-        // BEST PRACTICE: Warten bis der Kernel bereit ist
         if (IPS_GetKernelRunlevel() !== KR_READY) {
-            $this->LogMessage("ApplyChanges: Kernel not ready", KL_MESSAGE);
             return;
         }
-
-        $this->LogMessage("ApplyChanges: Triggered", KL_MESSAGE);
 
         parent::ApplyChanges();
 
         $this->rpcClient = null;
+        $this->config = []; // Interne Konfiguration zurücksetzen
 
-        // Zustände zurücksetzen (Original-Logik)
-        $this->WriteAttributeBoolean('_IsSending', false);
-        $this->WriteAttributeString('_BatchBuffer', '[]');
+        // 1. Radikales Löschen aller alten Nachrichten-Registrierungen
+        $messages = $this->GetMessageList();
+        foreach ($messages as $senderID => $messageID) {
+            $this->UnregisterMessage($senderID, VM_UPDATE);
+        }
 
-        // Auswahl laden
+        // 2. Daten aus dem Attribut laden
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
-        $this->LogMessage("ApplyChanges: Raw Cache is: " . $syncListRaw, KL_MESSAGE);
 
-        // Initial-Fallback: Falls das Attribut noch leer ist (Neuinstallation), aus Property laden
-        if ($syncListRaw === "[]" || $syncListRaw === "") {
+        // Fallback NUR wenn das Attribut absolut leer ist (Initial-Setup)
+        // "[]" wird als gültige leere Auswahl akzeptiert und NICHT überschrieben
+        if ($syncListRaw === "") {
             $syncListRaw = $this->ReadPropertyString("SyncList");
             $this->WriteAttributeString("SyncListCache", $syncListRaw);
-            $this->LogMessage("ApplyChanges: Cache empty, loaded from Property", KL_MESSAGE);
         }
 
         $syncList = json_decode($syncListRaw, true);
+        $roots = json_decode($this->ReadPropertyString("Roots"), true);
 
-        $this->SetTimerInterval('BufferTimer', 0);
-        $this->SetTimerInterval('StartSyncTimer', 0);
+        if (!is_array($syncList)) $syncList = [];
+        if (!is_array($roots)) $roots = [];
 
-        // Alle alten Nachrichten-Registrierungen löschen (Original-Logik)
-        $this->LogMessage("ApplyChanges: Cleaning up old messages", KL_MESSAGE);
-        $messages = $this->GetMessageList();
-        foreach ($messages as $senderID => $messageID) $this->UnregisterMessage($senderID, VM_UPDATE);
-
-        // Variablen aus der konsolidierten Manager-Liste registrieren (jetzt basierend auf Attribut)
+        $cleanedSyncList = [];
+        $uniqueCheck = []; // Verhindert Duplikate im Cache
         $count = 0;
         $hasDeleteTask = false;
-        if (is_array($syncList)) {
-            foreach ($syncList as $item) {
-                $isDelete = !empty($item['Delete']);
-                $isActive = !empty($item['Active']);
-                $vID = isset($item['ObjectID']) ? (int)$item['ObjectID'] : 0;
 
-                if ($isDelete) {
-                    $hasDeleteTask = true;
-                }
+        // 3. Validierung und Bereinigung
+        foreach ($syncList as $item) {
+            $vID = (int)($item['ObjectID'] ?? 0);
+            $folder = $item['Folder'] ?? '';
+            $rootID = (int)($item['LocalRootID'] ?? 0);
 
-                // NUR registrieren, wenn aktiv UND NICHT zum löschen markiert
-                if ($isActive && !$isDelete && $vID > 0 && IPS_ObjectExists($vID)) {
-                    $this->LogMessage("ApplyChanges: Registering Message for ID: " . $vID . " (" . IPS_GetName($vID) . ")", KL_MESSAGE);
-                    $this->RegisterMessage($vID, VM_UPDATE);
-                    $count++;
+            if ($vID === 0 || !IPS_ObjectExists($vID)) continue;
+
+            // Validierung: Gehört die Variable noch zu einem existierenden Mapping aus Schritt 2?
+            $isValidMapping = false;
+            foreach ($roots as $r) {
+                if (($r['TargetFolder'] ?? '') === $folder && (int)($r['LocalRootID'] ?? 0) === $rootID) {
+                    if ($this->IsChildOf($vID, $rootID)) {
+                        $isValidMapping = true;
+                        break;
+                    }
                 }
             }
+
+            if (!$isValidMapping) {
+                $this->LogMessage("ApplyChanges: Dropping invalid entry for ID $vID (Mapping changed)", KL_MESSAGE);
+                continue;
+            }
+
+            // Duplikate im Cache verhindern (Triple-Key)
+            $key = $folder . '_' . $rootID . '_' . $vID;
+            if (isset($uniqueCheck[$key])) continue;
+            $uniqueCheck[$key] = true;
+
+            $isActive = !empty($item['Active']);
+            $isDelete = !empty($item['Delete']);
+
+            if ($isDelete) $hasDeleteTask = true;
+
+            // Nur registrieren, wenn aktiv und nicht zur Löschung markiert
+            if ($isActive && !$isDelete) {
+                $this->RegisterMessage($vID, VM_UPDATE);
+                $this->LogMessage("ApplyChanges: Monitoring ID $vID (" . IPS_GetName($vID) . ")", KL_MESSAGE);
+                $count++;
+            }
+
+            $cleanedSyncList[] = $item;
         }
 
-        // Status-Management (Original-Logik angepasst auf count)
+        // 4. Bereinigte Liste zurück in den Cache schreiben
+        $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
+
+        // 5. Status und Timer setzen
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104); // Inaktiv
+            $this->SetStatus(104);
         } else {
-            $this->SetStatus(102); // Aktiv
-            // Timer starten, wenn Variablen aktiv sind ODER eine Löschung ansteht
+            $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
-                $this->LogMessage("ApplyChanges: Starting SyncTimer (Active: $count, Deletions: " . ($hasDeleteTask ? "Yes" : "No") . ")", KL_MESSAGE);
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
         }
-        $this->LogMessage("ApplyChanges: Finished", KL_MESSAGE);
     }
 
     public function RequestAction($Ident, $Value)
@@ -432,16 +453,14 @@ class RemoteSync extends IPSModule
 
     public function SaveSelections()
     {
-        // BEST PRACTICE: Wir verzichten auf IPS_SetProperty und IPS_ApplyChanges,
-        // um die Instanz nicht unnötig neu zu starten und die Konfiguration 
-        // nicht automatisiert zu überschreiben.
+        // Wir setzen die Property permanent auf leer, da wir nun nur noch 
+        // mit dem Attribut SyncListCache arbeiten.
+        IPS_SetProperty($this->InstanceID, "SyncList", "[]");
 
-        // Da die Auswahl bereits durch RequestAction/ToggleAll im Attribut 
-        // 'SyncListCache' liegt, müssen wir lediglich die Nachrichten-Registrierung 
-        // aktualisieren. Dies erreichen wir durch einen manuellen Aufruf von ApplyChanges.
-        $this->ApplyChanges();
+        // Triggert ApplyChanges, was die neue Bereinigungs-Logik ausführt
+        IPS_ApplyChanges($this->InstanceID);
 
-        echo "Selection saved and active.";
+        echo "Selection saved and configuration cleaned.";
     }
 
 
