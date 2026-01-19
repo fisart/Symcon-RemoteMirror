@@ -472,16 +472,30 @@ class RemoteSync extends IPSModule
 
     public function ProcessSync()
     {
+        $this->LogMessage("ProcessSync: Timer fired", KL_MESSAGE);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
-        if (empty($this->config)) {
-            if (!$this->LoadConfig()) return;
+        if (!$this->LoadConfig()) {
+            $this->LogMessage("ProcessSync: Error - LoadConfig failed", KL_MESSAGE);
+            return;
         }
 
-        foreach ($this->config['SyncList'] as $item) {
-            $this->AddToBuffer($item['ObjectID']);
+        $syncList = $this->config['SyncList'] ?? [];
+        $this->LogMessage("ProcessSync: SyncList contains " . count($syncList) . " entries", KL_MESSAGE);
+
+        foreach ($syncList as $index => $item) {
+            $vID = $item['ObjectID'] ?? 0;
+            $isActive = !empty($item['Active']);
+            $isDelete = !empty($item['Delete']);
+            $folder = $item['Folder'] ?? 'unknown';
+
+            if ($isActive || $isDelete) {
+                $this->LogMessage("ProcessSync: Triggering AddToBuffer for ID $vID (Folder: $folder)", KL_MESSAGE);
+                $this->AddToBuffer($vID);
+            }
         }
 
+        $this->LogMessage("ProcessSync: All items processed, calling FlushBuffer", KL_MESSAGE);
         $this->FlushBuffer();
     }
     private function GetTargetConfig(string $FolderName)
