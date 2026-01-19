@@ -732,7 +732,7 @@ if (!is_array(\$packet)) return;
 
 if (!is_array(\$batch) || \$rootID == 0) return;
 
-// --- Profile Creation (identisch) ---
+// --- Profile Creation (unverändert) ---
 if (is_array(\$profiles)) {
     foreach (\$profiles as \$pName => \$pDef) {
         if (!is_string(\$pName) || \$pName === '' || IPS_VariableProfileExists(\$pName)) continue;
@@ -782,7 +782,7 @@ foreach (\$batch as \$item) {
             }
         }
 
-        // 3. LÖSCHEN mit Logging und Upward-Cleanup
+        // 3. LÖSCHEN mit korrigiertem Upward-Cleanup
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
                 \$parentToCleanup = IPS_GetParent(\$remoteID);
@@ -806,25 +806,21 @@ foreach (\$batch as \$item) {
                     if (!IPS_ObjectExists(\$parentToCleanup)) break;
                     
                     \$children = IPS_GetChildrenIDs(\$parentToCleanup);
-                    if (count(\$children) > 0) {
-                        IPS_LogMessage('RemoteSync_RX', 'Container ' . \$parentToCleanup . ' not empty, stopping cleanup.');
-                        break;
-                    }
+                    if (count(\$children) > 0) break;
 
                     \$obj = IPS_GetObject(\$parentToCleanup);
                     \$nextParent = IPS_GetParent(\$parentToCleanup);
 
                     if (\$obj['ObjectType'] == 0) { // Kategorie
-                        IPS_LogMessage('RemoteSync_RX', 'Cleaning up empty Category ' . \$parentToCleanup);
                         @IPS_DeleteCategory(\$parentToCleanup);
+                        IPS_LogMessage('RemoteSync_RX', 'Cleaned up empty Category ' . \$parentToCleanup);
                     } elseif (\$obj['ObjectType'] == 1) { // Instanz
                         \$inst = IPS_GetInstance(\$parentToCleanup);
-                        // Wir löschen nur Dummy-Instanzen automatisch
-                        if (\$inst['ModuleID'] == '{485D0419-BE97-4548-AA9C-C083EB82E61E}') {
-                            IPS_LogMessage('RemoteSync_RX', 'Cleaning up empty Dummy-Instance ' . \$parentToCleanup);
+                        // KORREKTUR: Zugriff auf ModuleID erfolgt über ModuleInfo
+                        if (isset(\$inst['ModuleInfo']['ModuleID']) && strcasecmp(\$inst['ModuleInfo']['ModuleID'], '{485D0419-BE97-4548-AA9C-C083EB82E61E}') === 0) {
                             @IPS_DeleteInstance(\$parentToCleanup);
+                            IPS_LogMessage('RemoteSync_RX', 'Cleaned up empty Dummy-Instance ' . \$parentToCleanup);
                         } else {
-                            IPS_LogMessage('RemoteSync_RX', 'Container ' . \$parentToCleanup . ' is Hardware-Instance, stopping.');
                             break;
                         }
                     } else {
@@ -836,7 +832,7 @@ foreach (\$batch as \$item) {
             continue;
         }
 
-        // 4. ERSTELLEN (unverändert)
+        // 4. ERSTELLEN
         if (!\$remoteID) {
             if (!\$autoCreate) continue;
             \$remoteID = IPS_CreateVariable(\$item['Type']);
@@ -845,7 +841,7 @@ foreach (\$batch as \$item) {
             IPS_SetIdent(\$remoteID, \$safeIdent);
         }
 
-        // 5. UPDATE (unverändert)
+        // 5. UPDATE
         if (\$remoteID) {
             IPS_SetInfo(\$remoteID, \$refString);
             SetValue(\$remoteID, \$item['Value']);
