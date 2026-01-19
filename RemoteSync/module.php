@@ -672,72 +672,77 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
+        // 1. Sperre prüfen
         if ($this->ReadAttributeBoolean('_IsSending')) {
-            $this->LogMessage("FlushBuffer: Abort - already sending", KL_MESSAGE);
             return;
         }
+
         $this->SetTimerInterval('BufferTimer', 0);
 
+        // 2. Buffer lesen und SOFORT im Attribut leeren
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-        $fullBuffer = json_decode($rawBuffer, true);
+        $this->WriteAttributeString('_BatchBuffer', '[]'); // Attribut frei machen für neue Events
 
+        $fullBuffer = json_decode($rawBuffer, true);
         if (empty($fullBuffer) || $rawBuffer === '[]') {
-            $this->LogMessage("FlushBuffer: Buffer is empty, nothing to do", KL_MESSAGE);
             return;
         }
 
+        // 3. Sperre setzen für den langwierigen RPC-Versand
         $this->WriteAttributeBoolean('_IsSending', true);
-        $this->LogMessage("FlushBuffer: Starting to process buffer keys: " . implode(", ", array_keys($fullBuffer)), KL_MESSAGE);
 
         try {
             foreach ($fullBuffer as $bufferKey => $variables) {
                 $parts = explode(':', $bufferKey);
-                if (count($parts) < 2) {
-                    $this->LogMessage("FlushBuffer: Invalid BufferKey format: $bufferKey", KL_MESSAGE);
-                    continue;
-                }
+                if (count($parts) < 2) continue;
 
                 $folderName = $parts[0];
                 $remoteRootID = (int)$parts[1];
 
-                $this->LogMessage("FlushBuffer: Processing Target Folder: $folderName (RemoteRoot: $remoteRootID)", KL_MESSAGE);
-
                 $target = $this->GetTargetConfig($folderName);
-                if (!$target) {
-                    $this->LogMessage("FlushBuffer: Error - Could not find target config for folder: $folderName", KL_MESSAGE);
-                    continue;
-                }
-
-                if (!$this->InitConnectionForFolder($target)) {
-                    $this->LogMessage("FlushBuffer: Error - Connection initialization failed for $folderName", KL_MESSAGE);
-                    continue;
-                }
+                if (!$target || !$this->InitConnectionForFolder($target)) continue;
 
                 $batch = array_values($variables);
+
+                // Profile sammeln (verkürzt für die Darstellung)
+                $profiles = [];
+                if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
+                    foreach ($batch as $item) {
+                        if (!empty($item['Profile']) && !isset($profiles[$item['Profile']])) {
+                            if (@IPS_VariableProfileExists($item['Profile'])) {
+                                $profiles[$item['Profile']] = IPS_GetVariableProfile($item['Profile']);
+                            }
+                        }
+                    }
+                }
+
                 $packet = [
                     'TargetID'   => $remoteRootID,
                     'Batch'      => $batch,
                     'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
-                    'Profiles'   => [] // Profile-Logik hier der Übersicht halber verkürzt
+                    'Profiles'   => $profiles
                 ];
 
-                // WICHTIG: Nutzt den neuen Namen FindRemoteScript
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
                 if ($receiverID > 0) {
-                    $this->LogMessage("FlushBuffer: Sending " . count($batch) . " items to Receiver ID $receiverID on $folderName", KL_MESSAGE);
+                    $this->LogMessage("FlushBuffer: Sending " . count($batch) . " items to $folderName", KL_MESSAGE);
                     $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
-                    $this->LogMessage("FlushBuffer: RPC result from $folderName: " . $result, KL_MESSAGE);
-                } else {
-                    $this->LogMessage("FlushBuffer: Error - Receiver script not found on $folderName", KL_MESSAGE);
+                    $this->LogMessage("FlushBuffer: RPC result: " . $result, KL_MESSAGE);
                 }
             }
-            $this->WriteAttributeString('_BatchBuffer', '[]');
-            $this->LogMessage("FlushBuffer: Success - Buffer cleared", KL_MESSAGE);
         } catch (Exception $e) {
-            $this->LogMessage("FlushBuffer Exception: " . $e->getMessage(), KL_MESSAGE);
+            $this->LogMessage("FlushBuffer Error: " . $e->getMessage(), KL_MESSAGE);
         } finally {
+            // 4. Sperre aufheben
             $this->WriteAttributeBoolean('_IsSending', false);
+
+            // 5. Nachschauen, ob während des Versands neue Daten im Buffer gelandet sind
+            $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
+            if ($checkBuffer !== '[]' && $checkBuffer !== '') {
+                $this->LogMessage("FlushBuffer: New data arrived during sync, restarting timer", KL_MESSAGE);
+                $this->SetTimerInterval('BufferTimer', 200);
+            }
         }
     }
 
