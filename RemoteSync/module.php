@@ -740,6 +740,12 @@ class RemoteSync extends IPSModule
     }
     // --- CODE GENERATORS ---
 
+
+
+
+
+
+
     private function GenerateReceiverCode($gatewayID)
     {
         $gwID = (int)$gatewayID;
@@ -880,6 +886,133 @@ foreach (\$batch as \$item) {
         if (\$localID == 25458) IPS_LogMessage('RemoteSync_RX_TRACE', '[TRACE-25458] Receiver: EXCEPTION: ' . \$e->getMessage());
     }
 }
+?>";
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    private function GenerateGatewayCode(int $remSecID)
+    {
+        return "<?php
+/* RemoteSync Gateway */
+
+if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
+    return;
+}
+
+\$remoteVarID = \$_IPS['VARIABLE'];
+\$info       = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
+
+// Expected format: RS_REF:ServerKey:LocalID
+\$parts = explode(':', \$info);
+if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') {
+    IPS_LogMessage('RemoteSync_Gateway', 'Invalid ObjectInfo: ' . \$info);
+    return;
+}
+
+\$targetKey = \$parts[1];
+\$targetID  = (int)\$parts[2];
+
+\$secID = $remSecID;
+
+if (!function_exists('SEC_GetSecret')) {
+    IPS_LogMessage('RemoteSync_Gateway', 'SEC Module missing');
+    return;
+}
+
+\$json  = SEC_GetSecret(\$secID, \$targetKey);
+\$creds = json_decode(\$json, true);
+
+\$url  = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
+\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
+\$pw   = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
+
+if (!\$url || !\$user || !\$pw) {
+    IPS_LogMessage('RemoteSync_Gateway', 'Invalid config for key ' . \$targetKey);
+    return;
+}
+
+\$connUrl = 'https://' . urlencode(\$user) . ':' . urlencode(\$pw) . '@' . \$url . '/api/';
+
+class RemoteSync_MiniRPC
+{
+    private string \$url;
+
+    public function __construct(string \$url)
+    {
+        \$this->url = \$url;
+    }
+
+    public function __call(string \$method, array \$params)
+    {
+        \$payload = json_encode([
+            'jsonrpc' => '2.0',
+            'method'  => \$method,
+            'params'  => \$params,
+            'id'      => time()
+        ]);
+
+        \$opts = [
+            'http' => [
+                'method'  => 'POST',
+                'header'  => 'Content-Type: application/json',
+                'content' => \$payload,
+                'timeout' => 5
+            ],
+            'ssl'  => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false
+            ]
+        ];
+
+        \$ctx    = stream_context_create(\$opts);
+        \$result = @file_get_contents(\$this->url, false, \$ctx);
+
+        if (\$result === false) {
+            throw new Exception('Connect Fail');
+        }
+
+        \$response = json_decode(\$result, true);
+        if (isset(\$response['error'])) {
+            throw new Exception(\$response['error']['message'], \$response['error']['code'] ?? 0);
+        }
+
+        return \$response['result'] ?? null;
+    }
+}
+
+\$rpc = new RemoteSync_MiniRPC(\$connUrl);
+
+try {
+    \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
+} catch (Exception \$e) {
+    // -32603 typically means 'no action handler'
+    if (\$e->getCode() == -32603) {
+        try {
+            \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
+        } catch (Exception \$e2) {
+            IPS_LogMessage('RemoteSync_Gateway', 'SetValue failed: ' . \$e2->getMessage());
+        }
+    } else {
+        IPS_LogMessage('RemoteSync_Gateway', 'Error: ' . \$e->getMessage());
+    }
+}
+
+// Mirror value locally as well
+SetValue(\$remoteVarID, \$_IPS['VALUE']);
 ?>";
     }
 
