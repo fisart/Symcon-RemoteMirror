@@ -318,7 +318,7 @@ class RemoteSync extends IPSModule
 
             return $id;
         } catch (Exception $e) {
-            $this->LogDebug("RPC Error in FindRemoteScript: " . $e->getMessage());
+            $this->LogMessage("RPC Error in FindRemoteScript: " . $e->getMessage(), KL_MESSAGE);
             return 0;
         }
     }
@@ -466,7 +466,7 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        $this->LogDebug("Sink: Triggered by ID $SenderID");
+        $this->LogMessage("Sink: Triggered by ID $SenderID", KL_MESSAGE);
         $this->AddToBuffer($SenderID);
     }
 
@@ -668,6 +668,15 @@ class RemoteSync extends IPSModule
         }
 
         return false;
+    }
+
+    public function LogMessage($Message, $Type)
+    {
+        // Falls der Debug-Modus aktiv ist ODER es sich um eine Warnung/Fehler handelt
+        if ($this->ReadPropertyBoolean('DebugMode') || $Type == KL_ERROR || $Type == KL_WARNING) {
+            // Rufe die originale LogMessage-Funktion von Symcon auf
+            parent::LogMessage($Message, $Type);
+        }
     }
 
     public function FlushBuffer()
@@ -1128,14 +1137,6 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
             return true;
         } catch (Exception $e) {
             return false;
-        }
-    }
-
-    private function LogDebug($msg)
-    {
-        // Kein @ verwenden. ReadProperty sollte im laufenden Betrieb nicht fehlschlagen.
-        if ($this->ReadPropertyBoolean('DebugMode')) {
-            IPS_LogMessage('RemoteSync', $msg);
         }
     }
 }
