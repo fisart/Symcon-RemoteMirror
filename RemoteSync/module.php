@@ -630,6 +630,7 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
+        $this->LogMessage("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
         if ($this->ReadAttributeBoolean('_IsSending')) {
             $this->LogMessage("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
             return;
