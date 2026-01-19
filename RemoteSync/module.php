@@ -327,26 +327,31 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
+        // BEST PRACTICE: Warten bis der Kernel bereit ist
         if (IPS_GetKernelRunlevel() !== KR_READY) {
+            $this->LogMessage("ApplyChanges: Kernel not ready", KL_MESSAGE);
             return;
         }
 
+        $this->LogMessage("ApplyChanges: Triggered", KL_MESSAGE);
+
         parent::ApplyChanges();
 
-        // WICHTIG: Interne Konfiguration zurücksetzen, damit sie neu geladen wird
         $this->rpcClient = null;
-        $this->config = [];
 
+        // Zustände zurücksetzen (Original-Logik)
         $this->WriteAttributeBoolean('_IsSending', false);
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
+        // Auswahl laden
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
+        $this->LogMessage("ApplyChanges: Raw Cache is: " . $syncListRaw, KL_MESSAGE);
 
-        // Korrigierter Fallback: Nur wenn das Attribut wirklich noch nie gesetzt wurde (leer)
-        // Wir prüfen NICHT auf "[]", da dies eine gültige leere Auswahl ist.
-        if ($syncListRaw === "") {
+        // Initial-Fallback: Falls das Attribut noch leer ist (Neuinstallation), aus Property laden
+        if ($syncListRaw === "[]" || $syncListRaw === "") {
             $syncListRaw = $this->ReadPropertyString("SyncList");
             $this->WriteAttributeString("SyncListCache", $syncListRaw);
+            $this->LogMessage("ApplyChanges: Cache empty, loaded from Property", KL_MESSAGE);
         }
 
         $syncList = json_decode($syncListRaw, true);
@@ -354,37 +359,45 @@ class RemoteSync extends IPSModule
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
-        // Alle alten Nachrichten-Registrierungen löschen
+        // Alle alten Nachrichten-Registrierungen löschen (Original-Logik)
+        $this->LogMessage("ApplyChanges: Cleaning up old messages", KL_MESSAGE);
         $messages = $this->GetMessageList();
-        foreach ($messages as $senderID => $messageID) {
-            // Wir unregistrieren nur VM_UPDATE Nachrichten
-            $this->UnregisterMessage($senderID, VM_UPDATE);
-        }
+        foreach ($messages as $senderID => $messageID) $this->UnregisterMessage($senderID, VM_UPDATE);
 
+        // Variablen aus der konsolidierten Manager-Liste registrieren (jetzt basierend auf Attribut)
         $count = 0;
         $hasDeleteTask = false;
         if (is_array($syncList)) {
             foreach ($syncList as $item) {
                 $isDelete = !empty($item['Delete']);
                 $isActive = !empty($item['Active']);
+                $vID = isset($item['ObjectID']) ? (int)$item['ObjectID'] : 0;
 
-                if ($isDelete) $hasDeleteTask = true;
+                if ($isDelete) {
+                    $hasDeleteTask = true;
+                }
 
-                if ($isActive && !$isDelete && isset($item['ObjectID']) && IPS_ObjectExists((int)$item['ObjectID'])) {
-                    $this->RegisterMessage((int)$item['ObjectID'], VM_UPDATE);
+                // NUR registrieren, wenn aktiv UND NICHT zum löschen markiert
+                if ($isActive && !$isDelete && $vID > 0 && IPS_ObjectExists($vID)) {
+                    $this->LogMessage("ApplyChanges: Registering Message for ID: " . $vID . " (" . IPS_GetName($vID) . ")", KL_MESSAGE);
+                    $this->RegisterMessage($vID, VM_UPDATE);
                     $count++;
                 }
             }
         }
 
+        // Status-Management (Original-Logik angepasst auf count)
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104);
+            $this->SetStatus(104); // Inaktiv
         } else {
-            $this->SetStatus(102);
+            $this->SetStatus(102); // Aktiv
+            // Timer starten, wenn Variablen aktiv sind ODER eine Löschung ansteht
             if ($count > 0 || $hasDeleteTask) {
+                $this->LogMessage("ApplyChanges: Starting SyncTimer (Active: $count, Deletions: " . ($hasDeleteTask ? "Yes" : "No") . ")", KL_MESSAGE);
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
         }
+        $this->LogMessage("ApplyChanges: Finished", KL_MESSAGE);
     }
 
     public function RequestAction($Ident, $Value)
@@ -517,6 +530,8 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
+        $this->LogMessage("AddToBuffer: Processing ID " . $localID, KL_MESSAGE);
+
         // Nutzt konsequent das Attribut
         $syncList = json_decode($this->ReadAttributeString("SyncListCache"), true);
         $roots = json_decode($this->ReadPropertyString("Roots"), true);
@@ -524,7 +539,10 @@ class RemoteSync extends IPSModule
         $buffer = json_decode($rawBuffer, true);
         if (!is_array($buffer)) $buffer = [];
 
-        if (!is_array($syncList) || !is_array($roots)) return;
+        if (!is_array($syncList) || !is_array($roots)) {
+            $this->LogMessage("AddToBuffer Error: SyncList or Roots is not an array", KL_MESSAGE);
+            return;
+        }
 
         foreach ($syncList as $item) {
             // Logik: Variable in den Buffer aufnehmen, wenn Active ODER Delete gesetzt ist
@@ -546,7 +564,15 @@ class RemoteSync extends IPSModule
                     }
                 }
 
-                if (!$foundMapping || !IPS_ObjectExists($localID)) continue;
+                if (!$foundMapping) {
+                    $this->LogMessage("AddToBuffer: No mapping found for ID $localID in Folder $folderName", KL_MESSAGE);
+                    continue;
+                }
+
+                if (!IPS_ObjectExists($localID)) {
+                    $this->LogMessage("AddToBuffer: Object $localID does not exist anymore", KL_MESSAGE);
+                    continue;
+                }
 
                 $var = IPS_GetVariable($localID);
                 $payload = [
@@ -558,7 +584,7 @@ class RemoteSync extends IPSModule
                     'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
                     'Key'     => $this->ReadPropertyString("LocalServerKey"),
                     'Action'  => !empty($item['Action']),
-                    'Delete'  => !empty($item['Delete']) // WICHTIG: Flag für den Receiver
+                    'Delete'  => !empty($item['Delete'])
                 ];
 
                 // Pfad-Berechnung (Ihre Manager-Logik)
@@ -569,6 +595,8 @@ class RemoteSync extends IPSModule
                     $currentID = IPS_GetParent($currentID);
                 }
                 $payload['Path'] = $pathStack;
+
+                $this->LogMessage("AddToBuffer: Payload created for ID $localID. Path: " . json_encode($pathStack) . " | Folder: $folderName", KL_MESSAGE);
 
                 $bufferKey = $folderName . ':' . $remoteRootID;
                 $buffer[$bufferKey][$localID] = $payload;
