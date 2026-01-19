@@ -657,97 +657,29 @@ class RemoteSync extends IPSModule
 \$data   = \$_IPS['DATA'] ?? '';
 \$packet = json_decode(\$data, true);
 
-if (!is_array(\$packet)) {
-    return;
-}
+if (!is_array(\$packet)) return;
 
-// Extract Packet Info
 \$batch      = \$packet['Batch'] ?? [];
 \$rootID     = \$packet['TargetID'] ?? 0;
 \$autoCreate = !empty(\$packet['AutoCreate']); 
 \$gatewayID  = $gwID;
+\$profiles   = \$packet['Profiles'] ?? [];
 
-// Optional profile definitions from local
-\$profiles = \$packet['Profiles'] ?? [];
+if (!is_array(\$batch) || \$rootID == 0) return;
 
-if (!is_array(\$batch) || \$rootID == 0) {
-    return;
-}
-
-// --- Create missing profiles (if provided) ---
+// --- Profile Creation (identisch) ---
 if (is_array(\$profiles)) {
     foreach (\$profiles as \$pName => \$pDef) {
-        if (!is_string(\$pName) || \$pName === '') {
-            continue;
-        }
-        if (IPS_VariableProfileExists(\$pName) || !is_array(\$pDef)) {
-            continue;
-        }
-
-        // IPS_GetVariableProfile() structure (local side) typically:
-        // ProfileName, ProfileType, Icon, Prefix, Suffix,
-        // MinValue, MaxValue, StepSize, Digits, Associations[]
-        \$type = \$pDef['ProfileType'] ?? 0;
-
-        @IPS_CreateVariableProfile(\$pName, \$type);
-
-        if (isset(\$pDef['Icon'])) {
-            @IPS_SetVariableProfileIcon(\$pName, \$pDef['Icon']);
-        }
-
-        \$prefix = \$pDef['Prefix'] ?? '';
-        \$suffix = \$pDef['Suffix'] ?? '';
-        @IPS_SetVariableProfileText(\$pName, \$prefix, \$suffix);
-
-        \$min  = \$pDef['MinValue'] ?? 0;
-        \$max  = \$pDef['MaxValue'] ?? 0;
-        \$step = \$pDef['StepSize'] ?? 0;
-        @IPS_SetVariableProfileValues(\$pName, \$min, \$max, \$step);
-
-        if (isset(\$pDef['Digits'])) {
-            @IPS_SetVariableProfileDigits(\$pName, \$pDef['Digits']);
-        }
-
-        if (!empty(\$pDef['Associations']) && is_array(\$pDef['Associations'])) {
+        if (!is_string(\$pName) || \$pName === '' || IPS_VariableProfileExists(\$pName)) continue;
+        @IPS_CreateVariableProfile(\$pName, \$pDef['ProfileType'] ?? 0);
+        if (isset(\$pDef['Icon'])) @IPS_SetVariableProfileIcon(\$pName, \$pDef['Icon']);
+        @IPS_SetVariableProfileText(\$pName, \$pDef['Prefix'] ?? '', \$pDef['Suffix'] ?? '');
+        @IPS_SetVariableProfileValues(\$pName, \$pDef['MinValue'] ?? 0, \$pDef['MaxValue'] ?? 0, \$pDef['StepSize'] ?? 0);
+        if (isset(\$pDef['Digits'])) @IPS_SetVariableProfileDigits(\$pName, \$pDef['Digits']);
+        if (!empty(\$pDef['Associations'])) {
             foreach (\$pDef['Associations'] as \$assoc) {
-                if (!is_array(\$assoc)) {
-                    continue;
-                }
-                if (!array_key_exists('Value', \$assoc)) {
-                    continue;
-                }
-                \$value = \$assoc['Value'];
-                \$name  = \$assoc['Name']  ?? '';
-                \$icon  = \$assoc['Icon']  ?? '';
-                \$color = \$assoc['Color'] ?? 0;
-                @IPS_SetVariableProfileAssociation(\$pName, \$value, \$name, \$icon, \$color);
+                @IPS_SetVariableProfileAssociation(\$pName, \$assoc['Value'], \$assoc['Name'] ?? '', \$assoc['Icon'] ?? '', \$assoc['Color'] ?? 0);
             }
-        }
-
-        IPS_LogMessage('RemoteSync_RX', 'Created profile ' . \$pName);
-    }
-}
-
-// --- HELPER FOR TYPE-SAFE DELETION ---
-if (!function_exists('RS_RX_DeleteRecursive')) {
-    function RS_RX_DeleteRecursive(\$id) {
-        if (!IPS_ObjectExists(\$id)) return;
-        
-        // Delete children first
-        foreach (IPS_GetChildrenIDs(\$id) as \$childID) {
-            RS_RX_DeleteRecursive(\$childID);
-        }
-        
-        // Delete self based on type
-        \$type = IPS_GetObject(\$id)['ObjectType'];
-        switch (\$type) {
-            case 0: @IPS_DeleteCategory(\$id); break;
-            case 1: @IPS_DeleteInstance(\$id); break;
-            case 2: @IPS_DeleteVariable(\$id); break;
-            case 3: @IPS_DeleteScript(\$id, true); break;
-            case 4: @IPS_DeleteEvent(\$id); break;
-            case 5: @IPS_DeleteMedia(\$id, true); break;
-            case 6: @IPS_DeleteLink(\$id); break;
         }
     }
 }
@@ -758,204 +690,82 @@ foreach (\$batch as \$item) {
         \$serverKey = \$item['Key'];
         \$safeIdent = 'Rem_' . \$localID;
         \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
+        \$path      = \$item['Path'] ?? [];
 
-        // 1. FIND
-        \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$rootID);
+        // 1. PFAD AUFLÖSEN (Um in die Instanz-Ebene einzutauchen)
+        \$currentParent = \$rootID;
+        foreach (\$path as \$index => \$nodeName) {
+            // Wenn wir beim letzten Element sind, ist das die Variable selbst
+            if (\$index === count(\$path) - 1) break;
 
-        // Migration Fallback
-        if (!\$remoteID && !empty(\$item['Path']) && is_array(\$item['Path'])) {
-            \$currentParent = \$rootID;
-            \$foundPath     = true;
-            foreach (\$item['Path'] as \$nodeName) {
-                \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (!\$childID) {
-                    \$foundPath = false;
+            \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
+            if (!\$childID && \$autoCreate) {
+                // Erstelle Dummy-Instanz als Container (Spiegel der HW-Instanz)
+                \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
+                IPS_SetParent(\$childID, \$currentParent);
+                IPS_SetName(\$childID, \$nodeName);
+            }
+            if (\$childID) \$currentParent = \$childID;
+        }
+
+        // 2. VARIABLE SUCHEN (Im nun korrekten Unterordner)
+        // Erst über Ident suchen
+        \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$currentParent);
+        
+        // Falls nicht gefunden, über das Info-Feld suchen (sehr sicher)
+        if (!\$remoteID) {
+            foreach (IPS_GetChildrenIDs(\$currentParent) as \$cID) {
+                if (IPS_GetObject(\$cID)['ObjectInfo'] === \$refString) {
+                    \$remoteID = \$cID;
+                    @IPS_SetIdent(\$remoteID, \$safeIdent);
                     break;
                 }
-                \$currentParent = \$childID;
-            }
-            if (\$foundPath && \$currentParent != \$rootID) {
-                \$remoteID = \$currentParent;
-                IPS_SetIdent(\$remoteID, \$safeIdent);
             }
         }
 
-        // 2. DELETE (Type-Safe Fix Applied)
+        // 3. LÖSCHEN
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
-                \$info = IPS_GetObject(\$remoteID)['ObjectInfo'];
-                if (\$info === \$refString) {
-                    RS_RX_DeleteRecursive(\$remoteID);
-                    IPS_LogMessage('RemoteSync_RX', 'Deleted ID ' . \$remoteID);
-                }
+                // Rekursives Löschen
+                \$deleteFunc = function(\$id) use (&\$deleteFunc) {
+                    foreach (IPS_GetChildrenIDs(\$id) as \$childID) \$deleteFunc(\$childID);
+                    \$type = IPS_GetObject(\$id)['ObjectType'];
+                    switch (\$type) {
+                        case 0: @IPS_DeleteCategory(\$id); break;
+                        case 1: @IPS_DeleteInstance(\$id); break;
+                        case 2: @IPS_DeleteVariable(\$id); break;
+                        case 3: @IPS_DeleteScript(\$id, true); break;
+                    }
+                };
+                \$deleteFunc(\$remoteID);
             }
             continue;
         }
 
-        // 3. CREATE
+        // 4. ERSTELLEN
         if (!\$remoteID) {
             if (!\$autoCreate) continue;
-
-            \$currentParent = \$rootID;
-            foreach (\$item['Path'] as \$index => \$nodeName) {
-                \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (!\$childID) {
-                    if (\$index === count(\$item['Path']) - 1) {
-                        \$childID = IPS_CreateVariable(\$item['Type']);
-                        IPS_SetIdent(\$childID, \$safeIdent);
-                    } else {
-                        \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
-                    }
-                    IPS_SetParent(\$childID, \$currentParent);
-                    IPS_SetName(\$childID, \$nodeName);
-                }
-                \$currentParent = \$childID;
-            }
-            \$remoteID = \$currentParent;
+            \$remoteID = IPS_CreateVariable(\$item['Type']);
+            IPS_SetParent(\$remoteID, \$currentParent);
+            IPS_SetName(\$remoteID, end(\$path));
+            IPS_SetIdent(\$remoteID, \$safeIdent);
         }
 
-        // 4. UPDATE
+        // 5. UPDATE
         if (\$remoteID) {
             IPS_SetInfo(\$remoteID, \$refString);
             SetValue(\$remoteID, \$item['Value']);
-
             if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
                 IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
             }
-
-            \$children = IPS_GetChildrenIDs(\$remoteID);
-            foreach (\$children as \$childID) {
-                \$obj = IPS_GetObject(\$childID);
-                if (\$obj['ObjectType'] == 3) {
-                    IPS_DeleteScript(\$childID, true);
-                }
-            }
-
-            if (!empty(\$item['Action'])) {
-                IPS_SetVariableCustomAction(\$remoteID, \$gatewayID);
-            } else {
-                IPS_SetVariableCustomAction(\$remoteID, 0);
-            }
+            
+            // Aktion setzen (Gateway)
+            IPS_SetVariableCustomAction(\$remoteID, !empty(\$item['Action']) ? \$gatewayID : 0);
         }
     } catch (Exception \$e) {
-        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . (\$item['LocalID'] ?? 'unknown') . ': ' . \$e->getMessage());
+        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
     }
 }
-?>";
-    }
-
-
-    private function GenerateGatewayCode(int $remSecID)
-    {
-
-
-        return "<?php
-/* RemoteSync Gateway */
-
-if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
-    return;
-}
-
-\$remoteVarID = \$_IPS['VARIABLE'];
-\$info       = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
-
-// Expected format: RS_REF:ServerKey:LocalID
-\$parts = explode(':', \$info);
-if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid ObjectInfo: ' . \$info);
-    return;
-}
-
-\$targetKey = \$parts[1];
-\$targetID  = (int)\$parts[2];
-
-\$secID = $remSecID;
-
-if (!function_exists('SEC_GetSecret')) {
-    IPS_LogMessage('RemoteSync_Gateway', 'SEC Module missing');
-    return;
-}
-
-\$json  = SEC_GetSecret(\$secID, \$targetKey);
-\$creds = json_decode(\$json, true);
-
-\$url  = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
-\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
-\$pw   = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
-
-if (!\$url || !\$user || !\$pw) {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid config for key ' . \$targetKey);
-    return;
-}
-
-\$connUrl = 'https://' . urlencode(\$user) . ':' . urlencode(\$pw) . '@' . \$url . '/api/';
-
-class RemoteSync_MiniRPC
-{
-    private string \$url;
-
-    public function __construct(string \$url)
-    {
-        \$this->url = \$url;
-    }
-
-    public function __call(string \$method, array \$params)
-    {
-        \$payload = json_encode([
-            'jsonrpc' => '2.0',
-            'method'  => \$method,
-            'params'  => \$params,
-            'id'      => time()
-        ]);
-
-        \$opts = [
-            'http' => [
-                'method'  => 'POST',
-                'header'  => 'Content-Type: application/json',
-                'content' => \$payload,
-                'timeout' => 5
-            ],
-            'ssl'  => [
-                'verify_peer'      => false,
-                'verify_peer_name' => false
-            ]
-        ];
-
-        \$ctx    = stream_context_create(\$opts);
-        \$result = @file_get_contents(\$this->url, false, \$ctx);
-
-        if (\$result === false) {
-            throw new Exception('Connect Fail');
-        }
-
-        \$response = json_decode(\$result, true);
-        if (isset(\$response['error'])) {
-            throw new Exception(\$response['error']['message'], \$response['error']['code'] ?? 0);
-        }
-
-        return \$response['result'] ?? null;
-    }
-}
-
-\$rpc = new RemoteSync_MiniRPC(\$connUrl);
-
-try {
-    \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
-} catch (Exception \$e) {
-    // -32603 typically means 'no action handler'
-    if (\$e->getCode() == -32603) {
-        try {
-            \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
-        } catch (Exception \$e2) {
-            IPS_LogMessage('RemoteSync_Gateway', 'SetValue failed: ' . \$e2->getMessage());
-        }
-    } else {
-        IPS_LogMessage('RemoteSync_Gateway', 'Error: ' . \$e->getMessage());
-    }
-}
-
-// Mirror value locally as well
-SetValue(\$remoteVarID, \$_IPS['VALUE']);
 ?>";
     }
 
