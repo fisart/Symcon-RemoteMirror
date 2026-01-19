@@ -460,17 +460,29 @@ class RemoteSync extends IPSModule
         if (!$this->LoadConfig()) return;
 
         $syncList = $this->config['SyncList'] ?? [];
-        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Starting loop for " . count($syncList) . " potential entries", KL_MESSAGE);
+        $roots    = $this->config['Roots'] ?? [];
 
+        // Aktuellen Puffer einmalig laden
+        $buffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
         $processed = 0;
+
+        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Building batch for " . count($syncList) . " entries", KL_MESSAGE);
+
         foreach ($syncList as $item) {
             if (!empty($item['Active']) || !empty($item['Delete'])) {
-                $this->AddToBuffer($item['ObjectID']);
-                $processed++;
+                $payload = $this->GetPayload((int)$item['ObjectID'], $item, $roots);
+                if ($payload) {
+                    $bufferKey = $payload['Folder'] . ':' . $payload['RemoteRootID'];
+                    $buffer[$bufferKey][$payload['LocalID']] = $payload;
+                    $processed++;
+                }
             }
         }
 
-        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Finished. Handed over $processed variables to AddToBuffer", KL_MESSAGE);
+        // Ein einziges Mal persistieren!
+        $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
+
+        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Finished. Total items in buffer: $processed. saved in ONE step.", KL_MESSAGE);
         $this->FlushBuffer();
     }
 
@@ -482,6 +494,51 @@ class RemoteSync extends IPSModule
             if (isset($target['Name']) && $target['Name'] === $FolderName) return $target;
         }
         return null;
+    }
+    private function GetPayload(int $localID, array $itemConfig, array $roots): ?array
+    {
+        $folderName = $itemConfig['Folder'];
+        $foundMapping = false;
+        $localRootID = 0;
+        $remoteRootID = 0;
+
+        foreach ($roots as $root) {
+            if (($root['TargetFolder'] ?? '') === $folderName) {
+                if ($this->IsChildOf($localID, (int)$root['LocalRootID'])) {
+                    $localRootID = (int)$root['LocalRootID'];
+                    $remoteRootID = (int)$root['RemoteRootID'];
+                    $foundMapping = true;
+                    break;
+                }
+            }
+        }
+
+        if (!$foundMapping || !IPS_ObjectExists($localID)) {
+            return null;
+        }
+
+        $var = IPS_GetVariable($localID);
+        $pathStack = [];
+        $currentID = $localID;
+        while ($currentID != $localRootID && $currentID > 0) {
+            array_unshift($pathStack, IPS_GetName($currentID));
+            $currentID = IPS_GetParent($currentID);
+        }
+
+        return [
+            'LocalID'      => $localID,
+            'RemoteRootID' => $remoteRootID, // Hilfswert für die Gruppierung
+            'Folder'       => $folderName,   // Hilfswert
+            'Value'        => GetValue($localID),
+            'Type'         => $var['VariableType'],
+            'Profile'      => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
+            'Name'         => IPS_GetName($localID),
+            'Ident'        => IPS_GetObject($localID)['ObjectIdent'],
+            'Key'          => $this->config['LocalServerKey'],
+            'Action'       => !empty($itemConfig['Action']),
+            'Delete'       => !empty($itemConfig['Delete']),
+            'Path'         => $pathStack
+        ];
     }
 
     private function InitConnectionForFolder(array $target): bool
@@ -515,69 +572,19 @@ class RemoteSync extends IPSModule
     {
         if (!$this->LoadConfig()) return;
 
-        // [BUFFER-CHECK] Zähler vor dem Hinzufügen
-        $rawBefore = $this->ReadAttributeString('_BatchBuffer');
-        $dataBefore = json_decode($rawBefore, true) ?: [];
-        $countBefore = 0;
-        foreach ($dataBefore as $folder) $countBefore += count($folder);
-
         $syncList = $this->config['SyncList'];
         $roots    = $this->config['Roots'];
+        $buffer   = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
 
         foreach ($syncList as $item) {
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
-                $folderName = $item['Folder'];
-
-                $foundMapping = false;
-                $localRootID = 0;
-                $remoteRootID = 0;
-                foreach ($roots as $root) {
-                    if (($root['TargetFolder'] ?? '') === $folderName) {
-                        if ($this->IsChildOf((int)$localID, (int)$root['LocalRootID'])) {
-                            $localRootID = (int)$root['LocalRootID'];
-                            $remoteRootID = (int)$root['RemoteRootID'];
-                            $foundMapping = true;
-                            break;
-                        }
-                    }
+                $payload = $this->GetPayload((int)$localID, $item, $roots);
+                if ($payload) {
+                    $bufferKey = $payload['Folder'] . ':' . $payload['RemoteRootID'];
+                    $buffer[$bufferKey][$localID] = $payload;
+                    $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
+                    $this->LogMessage("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
                 }
-
-                if (!$foundMapping || !IPS_ObjectExists($localID)) continue;
-
-                $var = IPS_GetVariable($localID);
-                $payload = [
-                    'LocalID' => $localID,
-                    'Value'   => GetValue($localID),
-                    'Type'    => $var['VariableType'],
-                    'Profile' => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
-                    'Name'    => IPS_GetName($localID),
-                    'Ident'   => IPS_GetObject($localID)['ObjectIdent'],
-                    'Key'     => $this->config['LocalServerKey'],
-                    'Action'  => !empty($item['Action']),
-                    'Delete'  => !empty($item['Delete'])
-                ];
-
-                $pathStack = [];
-                $currentID = $localID;
-                while ($currentID != $localRootID && $currentID > 0) {
-                    array_unshift($pathStack, IPS_GetName($currentID));
-                    $currentID = IPS_GetParent($currentID);
-                }
-                $payload['Path'] = $pathStack;
-
-                // In den Batch-Buffer schreiben
-                $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-                $buffer = json_decode($rawBuffer, true) ?: [];
-
-                $bufferKey = $folderName . ':' . $remoteRootID;
-                $buffer[$bufferKey][$localID] = $payload;
-
-                $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
-
-                // [BUFFER-CHECK] Zähler nach dem Hinzufügen
-                $countAfter = 0;
-                foreach ($buffer as $folder) $countAfter += count($folder);
-                $this->LogMessage("[BUFFER-CHECK] AddToBuffer (ID $localID): Before: $countBefore, After: $countAfter", KL_MESSAGE);
             }
         }
         $this->SetTimerInterval('BufferTimer', 200);
