@@ -732,7 +732,7 @@ if (!is_array(\$packet)) return;
 
 if (!is_array(\$batch) || \$rootID == 0) return;
 
-// --- Profile Creation (identisch) ---
+// --- Profile Creation ---
 if (is_array(\$profiles)) {
     foreach (\$profiles as \$pName => \$pDef) {
         if (!is_string(\$pName) || \$pName === '' || IPS_VariableProfileExists(\$pName)) continue;
@@ -757,15 +757,13 @@ foreach (\$batch as \$item) {
         \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
         \$path      = \$item['Path'] ?? [];
 
-        // 1. PFAD AUFLÖSEN (Um in die Instanz-Ebene einzutauchen)
+        // 1. PFAD AUFLÖSEN
         \$currentParent = \$rootID;
         foreach (\$path as \$index => \$nodeName) {
-            // Wenn wir beim letzten Element sind, ist das die Variable selbst
             if (\$index === count(\$path) - 1) break;
 
             \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
             if (!\$childID && \$autoCreate) {
-                // Erstelle Dummy-Instanz als Container (Spiegel der HW-Instanz)
                 \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
                 IPS_SetParent(\$childID, \$currentParent);
                 IPS_SetName(\$childID, \$nodeName);
@@ -773,11 +771,9 @@ foreach (\$batch as \$item) {
             if (\$childID) \$currentParent = \$childID;
         }
 
-        // 2. VARIABLE SUCHEN (Im nun korrekten Unterordner)
-        // Erst über Ident suchen
+        // 2. VARIABLE SUCHEN
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$currentParent);
         
-        // Falls nicht gefunden, über das Info-Feld suchen (sehr sicher)
         if (!\$remoteID) {
             foreach (IPS_GetChildrenIDs(\$currentParent) as \$cID) {
                 if (IPS_GetObject(\$cID)['ObjectInfo'] === \$refString) {
@@ -788,13 +784,16 @@ foreach (\$batch as \$item) {
             }
         }
 
-        // 3. LÖSCHEN
+        // 3. LÖSCHEN mit Upward-Cleanup
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
-                // Rekursives Löschen
+                \$parentToCleanup = IPS_GetParent(\$remoteID);
+
+                // Rekursives Löschen des Zielobjekts
                 \$deleteFunc = function(\$id) use (&\$deleteFunc) {
                     foreach (IPS_GetChildrenIDs(\$id) as \$childID) \$deleteFunc(\$childID);
-                    \$type = IPS_GetObject(\$id)['ObjectType'];
+                    \$obj = IPS_GetObject(\$id);
+                    \$type = \$obj['ObjectType'];
                     switch (\$type) {
                         case 0: @IPS_DeleteCategory(\$id); break;
                         case 1: @IPS_DeleteInstance(\$id); break;
@@ -803,6 +802,26 @@ foreach (\$batch as \$item) {
                     }
                 };
                 \$deleteFunc(\$remoteID);
+
+                // Upward Cleanup: Leere Container-Instanzen entfernen
+                while (\$parentToCleanup > 0 && \$parentToCleanup != \$rootID) {
+                    if (IPS_ObjectExists(\$parentToCleanup)) {
+                        \$obj = IPS_GetObject(\$parentToCleanup);
+                        if (\$obj['ObjectType'] == 1) { // Instanz
+                            \$inst = IPS_GetInstance(\$parentToCleanup);
+                            // Prüfen ob Dummy-Instanz und ob sie keine Kinder mehr hat
+                            if (\$inst['ModuleID'] == '{485D0419-BE97-4548-AA9C-C083EB82E61E}') {
+                                if (count(IPS_GetChildrenIDs(\$parentToCleanup)) == 0) {
+                                    \$nextParent = IPS_GetParent(\$parentToCleanup);
+                                    @IPS_DeleteInstance(\$parentToCleanup);
+                                    \$parentToCleanup = \$nextParent;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
             }
             continue;
         }
@@ -823,8 +842,6 @@ foreach (\$batch as \$item) {
             if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
                 IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
             }
-            
-            // Aktion setzen (Gateway)
             IPS_SetVariableCustomAction(\$remoteID, !empty(\$item['Action']) ? \$gatewayID : 0);
         }
     } catch (Exception \$e) {
@@ -833,7 +850,6 @@ foreach (\$batch as \$item) {
 }
 ?>";
     }
-
     private function BuildSyncListAndCache($OverrideColumn = null, $OverrideState = null)
     {
         try {
