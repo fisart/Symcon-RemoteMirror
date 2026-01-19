@@ -613,9 +613,9 @@ class RemoteSync extends IPSModule
         return false;
     }
 
-    public function LogMessage($Message, $Type)
+    public function LogMessage(string $Message, int $Type)
     {
-        // DebugMode Property aus dem Cache laden (über LoadConfig indirekt)
+        // DebugMode Property aus dem Cache laden
         $debug = $this->ReadPropertyBoolean('DebugMode');
 
         // Wir lassen [BUFFER-CHECK] Meldungen nur durch, wenn DebugMode aktiv ist
@@ -623,6 +623,7 @@ class RemoteSync extends IPSModule
             return;
         }
 
+        // Standard-Filterung: Wenn Debug an ist ODER es ein Fehler/Warnung ist
         if ($debug || $Type == KL_ERROR || $Type == KL_WARNING) {
             parent::LogMessage($Message, $Type);
         }
