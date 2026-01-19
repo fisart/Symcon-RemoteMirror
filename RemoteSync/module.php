@@ -588,6 +588,10 @@ class RemoteSync extends IPSModule
             }
         }
         $this->SetTimerInterval('BufferTimer', 200);
+        // ... nach dem Schreiben des Attributs ...
+        if ($localID == 25458) {
+            $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
+        }
     }
 
 
@@ -613,7 +617,7 @@ class RemoteSync extends IPSModule
         return false;
     }
 
-public function Log(string $Message, int $Type = KL_MESSAGE)
+    public function Log(string $Message, int $Type = KL_MESSAGE)
     {
         // DebugMode aus dem Cache/Property lesen
         if ($this->ReadPropertyBoolean('DebugMode') || $Type == KL_ERROR || $Type == KL_WARNING) {
@@ -629,6 +633,7 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
     public function FlushBuffer()
     {
         $this->Log("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
+
         if ($this->ReadAttributeBoolean('_IsSending')) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
             return;
@@ -636,13 +641,11 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
 
         $this->SetTimerInterval('BufferTimer', 0);
 
-        // [BUFFER-CHECK] Puffer auslesen und SOFORT im Attribut leeren (Race-Condition-Fix)
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
         $fullBuffer = json_decode($rawBuffer, true) ?: [];
 
-        // Zählen wie viele Items insgesamt im Paket sind
         $totalItems = 0;
         foreach ($fullBuffer as $folder => $vars) {
             $totalItems += count($vars);
@@ -654,7 +657,6 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
 
         $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch: $totalItems", KL_MESSAGE);
 
-        // Sperre setzen für den Sendevorgang
         $this->WriteAttributeBoolean('_IsSending', true);
 
         try {
@@ -665,6 +667,11 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
                 $folderName = $parts[0];
                 $remoteRootID = (int)$parts[1];
 
+                // --- TRACE LOGIK FÜR ID 25458 ---
+                if (isset($variables[25458])) {
+                    $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch for folder '$folderName'. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
+                }
+
                 $target = $this->GetTargetConfig($folderName);
                 if (!$target || !$this->InitConnectionForFolder($target)) {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to $folderName failed.", KL_MESSAGE);
@@ -673,7 +680,6 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
 
                 $batch = array_values($variables);
 
-                // Profile sammeln
                 $profiles = [];
                 if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                     foreach ($batch as $item) {
@@ -692,12 +698,28 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
                     'Profiles'   => $profiles
                 ];
 
+                // --- JSON VALIDIERUNG ---
+                $jsonPacket = json_encode($packet);
+                if ($jsonPacket === false) {
+                    $errorMsg = json_last_error_msg();
+                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName. Error: " . $errorMsg, KL_ERROR);
+                    if (isset($variables[25458])) {
+                        $this->Log("[TRACE-25458] FlushBuffer: ABORT! ID 25458 caused a JSON encoding error (likely invalid UTF-8 characters).", KL_NOTIFY);
+                    }
+                    continue;
+                }
+
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
                 if ($receiverID > 0) {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
-                    $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
+                    $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
+
+                    if (isset($variables[25458])) {
+                        $this->Log("[TRACE-25458] FlushBuffer: Packet containing 25458 was sent. Remote response: " . $result, KL_NOTIFY);
+                    } else {
+                        $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
+                    }
                 } else {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
                 }
@@ -705,10 +727,8 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
         } finally {
-            // Sperre aufheben
             $this->WriteAttributeBoolean('_IsSending', false);
 
-            // [BUFFER-CHECK] Prüfen, ob während des Versands neue Daten eingetroffen sind
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
@@ -718,7 +738,6 @@ public function Log(string $Message, int $Type = KL_MESSAGE)
             }
         }
     }
-
     // --- CODE GENERATORS ---
 
     private function GenerateReceiverCode($gatewayID)
@@ -759,8 +778,14 @@ if (is_array(\$profiles)) {
 }
 
 foreach (\$batch as \$item) {
+    \$localID   = \$item['LocalID'];
+    
+    // --- TRACE LOGIK FÜR ID 25458 ---
+    if (\$localID == 25458) {
+        IPS_LogMessage('RemoteSync_RX_TRACE', '!!! [TRACE-25458] Receiver: Processing Item 25458. Value: ' . (string)\$item['Value']);
+    }
+
     try {
-        \$localID   = \$item['LocalID'];
         \$serverKey = \$item['Key'];
         \$safeIdent = 'Rem_' . \$localID;
         \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
@@ -790,14 +815,15 @@ foreach (\$batch as \$item) {
                 }
             }
         }
+        
+        if (\$localID == 25458) {
+            IPS_LogMessage('RemoteSync_RX_TRACE', '[TRACE-25458] Receiver: Object Search Result. RemoteID: ' . (\$remoteID ?: 'NOT FOUND') . ' in Parent: ' . \$currentParent);
+        }
 
-        // 3. LÖSCHEN mit korrigiertem Upward-Cleanup
+        // 3. LÖSCHEN (unverändert)
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
                 \$parentToCleanup = IPS_GetParent(\$remoteID);
-                IPS_LogMessage('RemoteSync_RX', 'Starting deletion for Variable ' . \$remoteID);
-
-                // Rekursives Löschen des Objekts selbst
                 \$deleteRecursive = function(\$id) use (&\$deleteRecursive) {
                     foreach (IPS_GetChildrenIDs(\$id) as \$childID) \$deleteRecursive(\$childID);
                     \$obj = IPS_GetObject(\$id);
@@ -809,32 +835,20 @@ foreach (\$batch as \$item) {
                     }
                 };
                 \$deleteRecursive(\$remoteID);
-
-                // Upward Cleanup: Leere Container entfernen
                 while (\$parentToCleanup > 0 && \$parentToCleanup != \$rootID) {
                     if (!IPS_ObjectExists(\$parentToCleanup)) break;
-                    
                     \$children = IPS_GetChildrenIDs(\$parentToCleanup);
                     if (count(\$children) > 0) break;
-
                     \$obj = IPS_GetObject(\$parentToCleanup);
                     \$nextParent = IPS_GetParent(\$parentToCleanup);
-
-                    if (\$obj['ObjectType'] == 0) { // Kategorie
+                    if (\$obj['ObjectType'] == 0) {
                         @IPS_DeleteCategory(\$parentToCleanup);
-                        IPS_LogMessage('RemoteSync_RX', 'Cleaned up empty Category ' . \$parentToCleanup);
-                    } elseif (\$obj['ObjectType'] == 1) { // Instanz
+                    } elseif (\$obj['ObjectType'] == 1) {
                         \$inst = IPS_GetInstance(\$parentToCleanup);
-                        // KORREKTUR: Zugriff auf ModuleID erfolgt über ModuleInfo
                         if (isset(\$inst['ModuleInfo']['ModuleID']) && strcasecmp(\$inst['ModuleInfo']['ModuleID'], '{485D0419-BE97-4548-AA9C-C083EB82E61E}') === 0) {
                             @IPS_DeleteInstance(\$parentToCleanup);
-                            IPS_LogMessage('RemoteSync_RX', 'Cleaned up empty Dummy-Instance ' . \$parentToCleanup);
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
+                        } else { break; }
+                    } else { break; }
                     \$parentToCleanup = \$nextParent;
                 }
             }
@@ -848,6 +862,7 @@ foreach (\$batch as \$item) {
             IPS_SetParent(\$remoteID, \$currentParent);
             IPS_SetName(\$remoteID, end(\$path));
             IPS_SetIdent(\$remoteID, \$safeIdent);
+            if (\$localID == 25458) IPS_LogMessage('RemoteSync_RX_TRACE', '[TRACE-25458] Receiver: Created NEW variable. ID: ' . \$remoteID);
         }
 
         // 5. UPDATE
@@ -858,123 +873,13 @@ foreach (\$batch as \$item) {
                 IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
             }
             IPS_SetVariableCustomAction(\$remoteID, !empty(\$item['Action']) ? \$gatewayID : 0);
+            if (\$localID == 25458) IPS_LogMessage('RemoteSync_RX_TRACE', '[TRACE-25458] Receiver: Value and Action updated successfully.');
         }
     } catch (Exception \$e) {
         IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
+        if (\$localID == 25458) IPS_LogMessage('RemoteSync_RX_TRACE', '[TRACE-25458] Receiver: EXCEPTION: ' . \$e->getMessage());
     }
 }
-?>";
-    }
-
-    private function GenerateGatewayCode(int $remSecID)
-    {
-        return "<?php
-/* RemoteSync Gateway */
-
-if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
-    return;
-}
-
-\$remoteVarID = \$_IPS['VARIABLE'];
-\$info       = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
-
-// Expected format: RS_REF:ServerKey:LocalID
-\$parts = explode(':', \$info);
-if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid ObjectInfo: ' . \$info);
-    return;
-}
-
-\$targetKey = \$parts[1];
-\$targetID  = (int)\$parts[2];
-
-\$secID = $remSecID;
-
-if (!function_exists('SEC_GetSecret')) {
-    IPS_LogMessage('RemoteSync_Gateway', 'SEC Module missing');
-    return;
-}
-
-\$json  = SEC_GetSecret(\$secID, \$targetKey);
-\$creds = json_decode(\$json, true);
-
-\$url  = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
-\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
-\$pw   = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
-
-if (!\$url || !\$user || !\$pw) {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid config for key ' . \$targetKey);
-    return;
-}
-
-\$connUrl = 'https://' . urlencode(\$user) . ':' . urlencode(\$pw) . '@' . \$url . '/api/';
-
-class RemoteSync_MiniRPC
-{
-    private string \$url;
-
-    public function __construct(string \$url)
-    {
-        \$this->url = \$url;
-    }
-
-    public function __call(string \$method, array \$params)
-    {
-        \$payload = json_encode([
-            'jsonrpc' => '2.0',
-            'method'  => \$method,
-            'params'  => \$params,
-            'id'      => time()
-        ]);
-
-        \$opts = [
-            'http' => [
-                'method'  => 'POST',
-                'header'  => 'Content-Type: application/json',
-                'content' => \$payload,
-                'timeout' => 5
-            ],
-            'ssl'  => [
-                'verify_peer'      => false,
-                'verify_peer_name' => false
-            ]
-        ];
-
-        \$ctx    = stream_context_create(\$opts);
-        \$result = @file_get_contents(\$this->url, false, \$ctx);
-
-        if (\$result === false) {
-            throw new Exception('Connect Fail');
-        }
-
-        \$response = json_decode(\$result, true);
-        if (isset(\$response['error'])) {
-            throw new Exception(\$response['error']['message'], \$response['error']['code'] ?? 0);
-        }
-
-        return \$response['result'] ?? null;
-    }
-}
-
-\$rpc = new RemoteSync_MiniRPC(\$connUrl);
-
-try {
-    \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
-} catch (Exception \$e) {
-    // -32603 typically means 'no action handler'
-    if (\$e->getCode() == -32603) {
-        try {
-            \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
-        } catch (Exception \$e2) {
-            IPS_LogMessage('RemoteSync_Gateway', 'SetValue failed: ' . \$e2->getMessage());
-        }
-    } else {
-        IPS_LogMessage('RemoteSync_Gateway', 'Error: ' . \$e->getMessage());
-    }
-}
-
-// Mirror value locally as well
-SetValue(\$remoteVarID, \$_IPS['VALUE']);
 ?>";
     }
 
