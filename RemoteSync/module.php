@@ -313,7 +313,7 @@ class RemoteSync extends IPSModule
 
             return $id;
         } catch (Exception $e) {
-            $this->LogMessage("RPC Error in FindRemoteScript: " . $e->getMessage(), KL_MESSAGE);
+            $this->Log("RPC Error in FindRemoteScript: " . $e->getMessage(), KL_MESSAGE);
             return 0;
         }
     }
@@ -329,7 +329,7 @@ class RemoteSync extends IPSModule
         // [BUFFER-CHECK] Vor dem Reset prüfen, ob noch Daten im Puffer sind
         $oldBuffer = $this->ReadAttributeString('_BatchBuffer');
         if ($oldBuffer !== '[]' && $oldBuffer !== '') {
-            $this->LogMessage("[BUFFER-CHECK] ApplyChanges: Existing buffer detected before reset! Length: " . strlen($oldBuffer) . " characters", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] ApplyChanges: Existing buffer detected before reset! Length: " . strlen($oldBuffer) . " characters", KL_MESSAGE);
         }
 
         parent::ApplyChanges();
@@ -450,7 +450,7 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        $this->LogMessage("Sink: Triggered by ID $SenderID", KL_MESSAGE);
+        $this->Log("Sink: Triggered by ID $SenderID", KL_MESSAGE);
         $this->AddToBuffer($SenderID);
     }
 
@@ -466,7 +466,7 @@ class RemoteSync extends IPSModule
         $buffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
         $processed = 0;
 
-        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Building batch for " . count($syncList) . " entries", KL_MESSAGE);
+        $this->Log("[BUFFER-CHECK] ProcessSync: Building batch for " . count($syncList) . " entries", KL_MESSAGE);
 
         foreach ($syncList as $item) {
             if (!empty($item['Active']) || !empty($item['Delete'])) {
@@ -482,7 +482,7 @@ class RemoteSync extends IPSModule
         // Ein einziges Mal persistieren!
         $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
 
-        $this->LogMessage("[BUFFER-CHECK] ProcessSync: Finished. Total items in buffer: $processed. saved in ONE step.", KL_MESSAGE);
+        $this->Log("[BUFFER-CHECK] ProcessSync: Finished. Total items in buffer: $processed. saved in ONE step.", KL_MESSAGE);
         $this->FlushBuffer();
     }
 
@@ -583,7 +583,7 @@ class RemoteSync extends IPSModule
                     $bufferKey = $payload['Folder'] . ':' . $payload['RemoteRootID'];
                     $buffer[$bufferKey][$localID] = $payload;
                     $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
-                    $this->LogMessage("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
+                    $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
                 }
             }
         }
@@ -613,27 +613,24 @@ class RemoteSync extends IPSModule
         return false;
     }
 
-    public function LogMessage(string $Message, int $Type)
+public function Log(string $Message, int $Type = KL_MESSAGE)
     {
-        // DebugMode Property aus dem Cache laden
-        $debug = $this->ReadPropertyBoolean('DebugMode');
-
-        // Wir lassen [BUFFER-CHECK] Meldungen nur durch, wenn DebugMode aktiv ist
-        if (strpos($Message, '[BUFFER-CHECK]') !== false && !$debug) {
-            return;
-        }
-
-        // Standard-Filterung: Wenn Debug an ist ODER es ein Fehler/Warnung ist
-        if ($debug || $Type == KL_ERROR || $Type == KL_WARNING) {
+        // DebugMode aus dem Cache/Property lesen
+        if ($this->ReadPropertyBoolean('DebugMode') || $Type == KL_ERROR || $Type == KL_WARNING) {
+            // Wir filtern [BUFFER-CHECK] nur, wenn Debug aus ist
+            if (strpos($Message, '[BUFFER-CHECK]') !== false && !$this->ReadPropertyBoolean('DebugMode')) {
+                return;
+            }
+            // Wir rufen die originale System-Funktion auf
             parent::LogMessage($Message, $Type);
         }
     }
 
     public function FlushBuffer()
     {
-        $this->LogMessage("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
+        $this->Log("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
         if ($this->ReadAttributeBoolean('_IsSending')) {
-            $this->LogMessage("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
             return;
         }
 
@@ -655,7 +652,7 @@ class RemoteSync extends IPSModule
             return;
         }
 
-        $this->LogMessage("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch: $totalItems", KL_MESSAGE);
+        $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch: $totalItems", KL_MESSAGE);
 
         // Sperre setzen für den Sendevorgang
         $this->WriteAttributeBoolean('_IsSending', true);
@@ -670,7 +667,7 @@ class RemoteSync extends IPSModule
 
                 $target = $this->GetTargetConfig($folderName);
                 if (!$target || !$this->InitConnectionForFolder($target)) {
-                    $this->LogMessage("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to $folderName failed.", KL_MESSAGE);
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to $folderName failed.", KL_MESSAGE);
                     continue;
                 }
 
@@ -698,15 +695,15 @@ class RemoteSync extends IPSModule
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
                 if ($receiverID > 0) {
-                    $this->LogMessage("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
                     $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => json_encode($packet)]);
-                    $this->LogMessage("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
                 } else {
-                    $this->LogMessage("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
                 }
             }
         } catch (Exception $e) {
-            $this->LogMessage("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
         } finally {
             // Sperre aufheben
             $this->WriteAttributeBoolean('_IsSending', false);
@@ -714,10 +711,10 @@ class RemoteSync extends IPSModule
             // [BUFFER-CHECK] Prüfen, ob während des Versands neue Daten eingetroffen sind
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
-                $this->LogMessage("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
                 $this->SetTimerInterval('BufferTimer', 200);
             } else {
-                $this->LogMessage("[BUFFER-CHECK] FlushBuffer: FINISHED. No more data pending.", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED. No more data pending.", KL_MESSAGE);
             }
         }
     }
@@ -1022,7 +1019,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
             return true;
         } catch (Exception $e) {
-            $this->LogMessage("LoadConfig Error: " . $e->getMessage(), KL_ERROR);
+            $this->Log("LoadConfig Error: " . $e->getMessage(), KL_ERROR);
             return false;
         }
     }
