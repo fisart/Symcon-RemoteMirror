@@ -189,6 +189,7 @@ class RemoteSync extends IPSModule
     }
 
 
+
     public function Destroy()
     {
         // Wir prüfen, ob wir überhaupt noch auf Nachrichten zugreifen können
