@@ -436,6 +436,8 @@ class RemoteSync extends IPSModule
             $cleanedSyncList[] = $item;
         }
 
+
+
         // Bereinigten Stand im Attribut speichern
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
