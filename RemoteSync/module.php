@@ -617,6 +617,114 @@ class RemoteSync extends IPSModule
         return false;
     }
 
+    public function ExportConfig(): string
+    {
+        $config = [
+            'Version'   => 1.3,
+            'Timestamp' => time(),
+            'Sender'    => IPS_GetName($this->InstanceID),
+            'Properties' => [
+                'Targets'               => $this->ReadPropertyString('Targets'),
+                'Roots'                 => $this->ReadPropertyString('Roots'),
+                'LocalPasswordModuleID' => $this->ReadPropertyInteger('LocalPasswordModuleID'),
+                'LocalServerKey'        => $this->ReadPropertyString('LocalServerKey'),
+                'DebugMode'             => $this->ReadPropertyBoolean('DebugMode'),
+                'AutoCreate'            => $this->ReadPropertyBoolean('AutoCreate'),
+                'ReplicateProfiles'     => $this->ReadPropertyBoolean('ReplicateProfiles')
+            ],
+            'Attributes' => [
+                'SyncListCache' => $this->ReadAttributeString('SyncListCache')
+            ]
+        ];
+        return json_encode($config, JSON_PRETTY_PRINT);
+    }
+
+    /**
+     * @param string $JSONString
+     * @return array Array mit ['status' => bool, 'messages' => array]
+     */
+    public function ImportConfig(string $JSONString): array
+    {
+        $data = json_decode($JSONString, true);
+        $messages = [];
+
+        // 1. Kritische Validierung (Abbruch)
+        if (!$data || !isset($data['Properties'], $data['Attributes'])) {
+            return ['status' => false, 'messages' => ['Error: Invalid JSON structure or missing segments.']];
+        }
+
+        $props = $data['Properties'];
+        $targets = json_decode($props['Targets'] ?? '[]', true);
+        $roots = json_decode($props['Roots'] ?? '[]', true);
+        $syncList = json_decode($data['Attributes']['SyncListCache'] ?? '[]', true);
+
+        // 2. Inhaltliche Prüfung (Sammeln von Warnungen)
+        foreach ($targets as $t) {
+            if (!is_int($t['RemoteScriptRootID'] ?? null)) {
+                $messages[] = "- Target '" . ($t['Name'] ?? '?') . "': RemoteScriptRootID is not an Integer.";
+            }
+        }
+
+        foreach ($roots as $r) {
+            $lID = (int)($r['LocalRootID'] ?? 0);
+            if ($lID > 0 && !IPS_ObjectExists($lID)) {
+                $messages[] = "- Local Root ID $lID does not exist on this system.";
+            }
+        }
+
+        foreach ($syncList as $item) {
+            $oID = (int)($item['ObjectID'] ?? 0);
+            if ($oID > 0 && !IPS_ObjectExists($oID)) {
+                $messages[] = "- Variable $oID from Sync-List missing.";
+            }
+        }
+
+        // 3. Daten schreiben
+        try {
+            foreach ($props as $key => $value) {
+                IPS_SetProperty($this->InstanceID, $key, $value);
+            }
+            $this->WriteAttributeString('SyncListCache', $data['Attributes']['SyncListCache']);
+
+            IPS_ApplyChanges($this->InstanceID);
+            return ['status' => true, 'messages' => $messages];
+        } catch (Exception $e) {
+            return ['status' => false, 'messages' => ['Exception: ' . $e->getMessage()]];
+        }
+    }
+
+    // --- UI Hilfsfunktionen für die Buttons ---
+
+    public function UIExport()
+    {
+        $json = $this->ExportConfig();
+        $this->UpdateFormField('TransferField', 'value', $json);
+    }
+
+    public function UIImport(string $JSONString)
+    {
+        if ($JSONString === "") {
+            echo "Please paste the JSON export string into the text area first.";
+            return;
+        }
+
+        $result = $this->ImportConfig($JSONString);
+
+        if ($result['status']) {
+            $msg = "IMPORT SUCCESSFUL.\n\n";
+            if (count($result['messages']) > 0) {
+                $msg .= "Warnings / Missing Objects:\n" . implode("\n", $result['messages']) . "\n\n";
+                $msg .= "Please correct the IDs in Step 2 and Step 3 where necessary.";
+            } else {
+                $msg .= "All objects and IDs validated successfully.";
+            }
+            echo $msg;
+        } else {
+            echo "IMPORT FAILED!\n\nDetails:\n" . implode("\n", $result['messages']);
+        }
+    }
+
+
     public function Log(string $Message, int $Type = KL_MESSAGE)
     {
         // DebugMode aus dem Cache/Property lesen
