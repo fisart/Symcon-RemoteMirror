@@ -191,20 +191,14 @@ class RemoteSync extends IPSModule
 
     public function Destroy()
     {
-        // 1. Timer sofort stoppen
-        $this->SetTimerInterval('StartSyncTimer', 0);
-        $this->SetTimerInterval('BufferTimer', 0);
+        // Wir prüfen, ob wir überhaupt noch auf Nachrichten zugreifen können
+        // Um die Warnungen zu vermeiden, lassen wir das manuelle Unregister weg,
+        // da Symcon dies beim Zerstören der Instanz ohnehin intern erledigt.
 
-        // 2. Alle Nachrichten-Registrierungen im Kernel lösen
-        $messages = $this->GetMessageList();
-        foreach ($messages as $senderID => $messageID) {
-            $this->UnregisterMessage($senderID, VM_UPDATE);
-        }
-
-        // 3. Flüchtige Status-Attribute zurücksetzen
-        // Verhindert, dass eine neue Instanz mit einer hängenden Sperre startet
-        $this->WriteAttributeBoolean('_IsSending', false);
-        $this->WriteAttributeString('_BatchBuffer', '[]');
+        // Wir beschränken uns in Destroy nur auf das absolut Notwendige.
+        // Das Stoppen der Timer ist gut, sollte aber bei Fehlern nicht das System blockieren.
+        @$this->SetTimerInterval('StartSyncTimer', 0);
+        @$this->SetTimerInterval('BufferTimer', 0);
 
         parent::Destroy();
     }
