@@ -811,6 +811,8 @@ class RemoteSync extends IPSModule
                 $folderName = $parts[0];
                 $remoteRootID = (int)$parts[1];
 
+                $this->Log("[PERF-DEBUG] Loop start for folder: $folderName", KL_MESSAGE);
+
                 // TRACE LOGIK FÜR ID 25458
                 if (isset($variables[25458])) {
                     $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch for folder '$folderName'. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
@@ -853,6 +855,8 @@ class RemoteSync extends IPSModule
                 if ($receiverID > 0) {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName", KL_MESSAGE);
 
+                    $this->Log("[PERF-DEBUG] Before RPC Call to $folderName", KL_MESSAGE);
+
                     // --- MESSUNG START ---
                     $startTime = microtime(true);
 
@@ -861,10 +865,20 @@ class RemoteSync extends IPSModule
                     // --- MESSUNG ENDE ---
                     $duration = (microtime(true) - $startTime) * 1000; // in Millisekunden
 
+                    $this->Log("[PERF-DEBUG] After RPC Call. Duration: " . round($duration, 2) . "ms", KL_MESSAGE);
+
                     // --- STATUS VARIABLEN AKTUALISIEREN ---
-                    $this->SetValue($this->GetTargetIdent($folderName, "Latency"), $duration);
-                    $this->SetValue($this->GetTargetIdent($folderName, "Batch"), count($batch));
-                    $this->SetValue($this->GetTargetIdent($folderName, "Queue"), 0); // Queue für diesen Folder leeren
+                    $latIdent = $this->GetTargetIdent($folderName, "Latency");
+                    $batIdent = $this->GetTargetIdent($folderName, "Batch");
+                    $queIdent = $this->GetTargetIdent($folderName, "Queue");
+
+                    $this->Log("[PERF-DEBUG] Target Idents: $latIdent, $batIdent", KL_MESSAGE);
+
+                    $this->SetValue($latIdent, $duration);
+                    $this->SetValue($batIdent, count($batch));
+                    $this->SetValue($queIdent, 0); // Queue für diesen Folder leeren
+
+                    $this->Log("[PERF-DEBUG] SetValue finished for $folderName", KL_MESSAGE);
 
                     if (isset($variables[25458])) {
                         $this->Log("[TRACE-25458] FlushBuffer: Packet sent. Latency: " . round($duration, 2) . "ms.", KL_NOTIFY);
