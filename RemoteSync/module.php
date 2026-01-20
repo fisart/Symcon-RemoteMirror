@@ -192,7 +192,7 @@ class RemoteSync extends IPSModule
 
     public function Destroy()
     {
-        // Alle Timer sicher stoppen
+        // Alle Timer   sicher stoppen
         @$this->SetTimerInterval('StartSyncTimer', 0);
         @$this->SetTimerInterval('BufferTimer', 0);
 
