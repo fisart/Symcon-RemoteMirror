@@ -403,7 +403,7 @@ class RemoteSync extends IPSModule
             $pos = 100 + ($index * 3); // Gruppierung im Objektbaum
 
             // Latency (Typ 2 = Float, Profil ~MS)
-            $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Latency"), $target['Name'] . ": Latency", 2, "~MS", $pos, true);
+            $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Latency"), $target['Name'] . ": Latency", 2, "", $pos, true);
 
             // Last Batch Size (Typ 1 = Integer)
             $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Batch"), $target['Name'] . ": Last Batch Size", 1, "", $pos + 1, true);
