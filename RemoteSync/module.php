@@ -354,7 +354,6 @@ class RemoteSync extends IPSModule
 
         $syncList = json_decode($syncListRaw, true) ?: [];
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
-        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?: []; // NEU für Monitoring
 
         $cleanedSyncList = [];
         $uniqueCheck = [];
@@ -396,22 +395,6 @@ class RemoteSync extends IPSModule
 
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
-        // --- NEU: PERFORMANCE MONITORING INITIALISIERUNG ---
-        foreach ($targets as $index => $target) {
-            if (empty($target['Name'])) continue;
-
-            $pos = 100 + ($index * 3); // Gruppierung im Objektbaum
-
-            // Latency (Typ 2 = Float, Profil ~MS)
-            $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Latency"), $target['Name'] . ": Latency", 2, "", $pos, true);
-
-            // Last Batch Size (Typ 1 = Integer)
-            $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Batch"), $target['Name'] . ": Last Batch Size", 1, "", $pos + 1, true);
-
-            // Queue Size (Typ 1 = Integer)
-            $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Queue"), $target['Name'] . ": Queue Size", 1, "", $pos + 2, true);
-        }
-
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
             $this->SetStatus(104);
         } else {
@@ -421,6 +404,7 @@ class RemoteSync extends IPSModule
             }
         }
     }
+
     public function RequestAction($Ident, $Value)
     {
         switch ($Ident) {
@@ -502,12 +486,6 @@ class RemoteSync extends IPSModule
         $this->FlushBuffer();
     }
 
-    private function GetTargetIdent(string $TargetName, string $Suffix): string
-    {
-        // Entfernt alle Sonderzeichen, um einen gültigen Ident zu erzeugen
-        $safeName = preg_replace('/[^A-Za-z0-9]/', '', $TargetName);
-        return "Tgt_" . $safeName . "_" . $Suffix;
-    }
 
     private function GetTargetConfig(string $FolderName)
     {
@@ -602,29 +580,15 @@ class RemoteSync extends IPSModule
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
                 $payload = $this->GetPayload((int)$localID, $item, $roots);
                 if ($payload) {
-                    $folderName = $payload['Folder'];
-                    $bufferKey = $folderName . ':' . $payload['RemoteRootID'];
-                    $buffer[$bufferKey][$payload['LocalID']] = $payload;
-
+                    $bufferKey = $payload['Folder'] . ':' . $payload['RemoteRootID'];
+                    $buffer[$bufferKey][$localID] = $payload;
                     $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
                     $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
-
-                    // --- PERFORMANCE MONITORING: Queue Size ---
-                    // Wir zählen alle wartenden Variablen im Puffer, die für diesen Folder bestimmt sind
-                    $queueCount = 0;
-                    foreach ($buffer as $key => $variables) {
-                        // Da der Key "Folder:RemoteRootID" ist, prüfen wir den Folder-Präfix
-                        if (strpos($key, $folderName . ':') === 0) {
-                            $queueCount += count($variables);
-                        }
-                    }
-                    $this->SetValue($this->GetTargetIdent($folderName, "Queue"), $queueCount);
                 }
             }
         }
-
         $this->SetTimerInterval('BufferTimer', 200);
-
+        // ... nach dem Schreiben des Attributs ...
         if ($localID == 25458) {
             $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
         }
@@ -776,7 +740,7 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
-        $this->Log("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
+        IPS_LogMessage("RemoteSync_Test", "!!! TIMER-CHECK: Ich bin in FlushBuffer gelandet !!!");
 
         if ($this->ReadAttributeBoolean('_IsSending')) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
@@ -811,9 +775,7 @@ class RemoteSync extends IPSModule
                 $folderName = $parts[0];
                 $remoteRootID = (int)$parts[1];
 
-                $this->Log("[PERF-DEBUG] Loop start for folder: $folderName", KL_MESSAGE);
-
-                // TRACE LOGIK FÜR ID 25458
+                // --- TRACE LOGIK FÜR ID 25458 ---
                 if (isset($variables[25458])) {
                     $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch for folder '$folderName'. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
                 }
@@ -844,46 +806,28 @@ class RemoteSync extends IPSModule
                     'Profiles'   => $profiles
                 ];
 
+                // --- JSON VALIDIERUNG ---
                 $jsonPacket = json_encode($packet);
                 if ($jsonPacket === false) {
-                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName", KL_ERROR);
+                    $errorMsg = json_last_error_msg();
+                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName. Error: " . $errorMsg, KL_ERROR);
+                    if (isset($variables[25458])) {
+                        $this->Log("[TRACE-25458] FlushBuffer: ABORT! ID 25458 caused a JSON encoding error (likely invalid UTF-8 characters).", KL_NOTIFY);
+                    }
                     continue;
                 }
 
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
                 if ($receiverID > 0) {
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName", KL_MESSAGE);
-
-                    $this->Log("[PERF-DEBUG] Before RPC Call to $folderName", KL_MESSAGE);
-
-                    // --- MESSUNG START ---
-                    $startTime = microtime(true);
-
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
                     $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
 
-                    // --- MESSUNG ENDE ---
-                    $duration = (microtime(true) - $startTime) * 1000; // in Millisekunden
-
-                    $this->Log("[PERF-DEBUG] After RPC Call. Duration: " . round($duration, 2) . "ms", KL_MESSAGE);
-
-                    // --- STATUS VARIABLEN AKTUALISIEREN ---
-                    $latIdent = $this->GetTargetIdent($folderName, "Latency");
-                    $batIdent = $this->GetTargetIdent($folderName, "Batch");
-                    $queIdent = $this->GetTargetIdent($folderName, "Queue");
-
-                    $this->Log("[PERF-DEBUG] Target Idents: $latIdent, $batIdent", KL_MESSAGE);
-
-                    $this->SetValue($latIdent, $duration);
-                    $this->SetValue($batIdent, count($batch));
-                    $this->SetValue($queIdent, 0); // Queue für diesen Folder leeren
-
-                    $this->Log("[PERF-DEBUG] SetValue finished for $folderName", KL_MESSAGE);
-
                     if (isset($variables[25458])) {
-                        $this->Log("[TRACE-25458] FlushBuffer: Packet sent. Latency: " . round($duration, 2) . "ms.", KL_NOTIFY);
+                        $this->Log("[TRACE-25458] FlushBuffer: Packet containing 25458 was sent. Remote response: " . $result, KL_NOTIFY);
+                    } else {
+                        $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
                     }
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
                 } else {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
                 }
@@ -895,11 +839,16 @@ class RemoteSync extends IPSModule
 
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived, restarting timer.", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
                 $this->SetTimerInterval('BufferTimer', 200);
+            } else {
+                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED. No more data pending.", KL_MESSAGE);
             }
         }
     }
+    // --- CODE GENERATORS ---
+
+
 
 
 
@@ -1241,12 +1190,5 @@ class RemoteSync_RPCClient
         $response = json_decode($result, true);
         if (isset($response['error'])) throw new Exception($response['error']['message']);
         return $response['result'] ?? null;
-    }
-
-    private function GetTargetIdent(string $TargetName, string $Suffix): string
-    {
-        // Entfernt alle Sonderzeichen, um einen gültigen Ident zu erzeugen
-        $safeName = preg_replace('/[^A-Za-z0-9]/', '', $TargetName);
-        return "Tgt_" . $safeName . "_" . $Suffix;
     }
 }
