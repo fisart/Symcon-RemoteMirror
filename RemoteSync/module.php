@@ -785,7 +785,6 @@ class RemoteSync extends IPSModule
 
         $this->SetTimerInterval('BufferTimer', 0);
 
-        // 1. Puffer auslesen und SOFORT im Attribut leeren (Race-Condition-Fix)
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
@@ -802,7 +801,6 @@ class RemoteSync extends IPSModule
 
         $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch: $totalItems", KL_MESSAGE);
 
-        // 2. Sperre setzen
         $this->WriteAttributeBoolean('_IsSending', true);
 
         try {
@@ -815,7 +813,7 @@ class RemoteSync extends IPSModule
 
                 // TRACE LOGIK FÜR ID 25458
                 if (isset($variables[25458])) {
-                    $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
+                    $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch for folder '$folderName'. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
                 }
 
                 $target = $this->GetTargetConfig($folderName);
@@ -825,6 +823,7 @@ class RemoteSync extends IPSModule
                 }
 
                 $batch = array_values($variables);
+
                 $profiles = [];
                 if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                     foreach ($batch as $item) {
@@ -854,39 +853,39 @@ class RemoteSync extends IPSModule
                 if ($receiverID > 0) {
                     $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName", KL_MESSAGE);
 
-                    // --- ZEITMESSUNG START ---
+                    // --- MESSUNG START ---
                     $startTime = microtime(true);
 
                     $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
 
-                    // --- ZEITMESSUNG ENDE ---
-                    $duration = (microtime(true) - $startTime) * 1000; // Umrechnung in ms
+                    // --- MESSUNG ENDE ---
+                    $duration = (microtime(true) - $startTime) * 1000; // in Millisekunden
 
                     // --- STATUS VARIABLEN AKTUALISIEREN ---
                     $this->SetValue($this->GetTargetIdent($folderName, "Latency"), $duration);
                     $this->SetValue($this->GetTargetIdent($folderName, "Batch"), count($batch));
-                    $this->SetValue($this->GetTargetIdent($folderName, "Queue"), 0); // Batch versendet, Queue für diesen Server leer
+                    $this->SetValue($this->GetTargetIdent($folderName, "Queue"), 0); // Queue für diesen Folder leeren
 
                     if (isset($variables[25458])) {
-                        $this->Log("[TRACE-25458] FlushBuffer: Packet sent. Latency: " . round($duration, 2) . "ms. Response: " . $result, KL_NOTIFY);
+                        $this->Log("[TRACE-25458] FlushBuffer: Packet sent. Latency: " . round($duration, 2) . "ms.", KL_NOTIFY);
                     }
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
+                } else {
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
                 }
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
         } finally {
-            // 3. Sperre aufheben
             $this->WriteAttributeBoolean('_IsSending', false);
 
-            // Prüfen, ob während des Versands neue Daten eingetroffen sind
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during sync, restarting timer", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived, restarting timer.", KL_MESSAGE);
                 $this->SetTimerInterval('BufferTimer', 200);
             }
         }
     }
-
 
 
 
