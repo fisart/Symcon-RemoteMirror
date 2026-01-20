@@ -192,14 +192,13 @@ class RemoteSync extends IPSModule
 
     public function Destroy()
     {
-        // Wir prüfen, ob wir überhaupt noch auf Nachrichten zugreifen können
-        // Um die Warnungen zu vermeiden, lassen wir das manuelle Unregister weg,
-        // da Symcon dies beim Zerstören der Instanz ohnehin intern erledigt.
-
-        // Wir beschränken uns in Destroy nur auf das absolut Notwendige.
-        // Das Stoppen der Timer ist gut, sollte aber bei Fehlern nicht das System blockieren.
+        // Alle Timer sicher stoppen
         @$this->SetTimerInterval('StartSyncTimer', 0);
         @$this->SetTimerInterval('BufferTimer', 0);
+
+        // Flüchtige Zustände zurücksetzen für den Fall einer Neuinstallation mit gleicher ID
+        $this->WriteAttributeBoolean('_IsSending', false);
+        $this->WriteAttributeString('_BatchBuffer', '[]');
 
         parent::Destroy();
     }
@@ -347,17 +346,21 @@ class RemoteSync extends IPSModule
 
         parent::ApplyChanges();
 
-        // --- SICHERHEITS-RESET BEIM START ---
+        // --- SICHERHEITS-RESET (Option A: Klare Verhältnisse) ---
         $this->rpcClient = null;
-        $this->config = []; // Internen Konfigurations-Cache leeren
-        $this->WriteAttributeBoolean('_IsSending', false); // Sperre hart lösen
+        $this->config = [];
 
-        // Timer initial stoppen, um Überschneidungen beim Umbau zu verhindern
+        // 1. Sperre hart lösen (verhindert hängendes "Busy"-Schild)
+        $this->WriteAttributeBoolean('_IsSending', false);
+
+        // 2. Puffer komplett leeren (Option A)
+        $this->WriteAttributeString('_BatchBuffer', '[]');
+
+        // 3. Timer initial stoppen
         $this->SetTimerInterval('BufferTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
         // --- NACHRICHTEN-CLEANUP ---
-        // Wir löschen radikal alle alten Überwachungen, um "Leichen" zu vermeiden
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
             $this->UnregisterMessage($senderID, VM_UPDATE);
@@ -366,7 +369,6 @@ class RemoteSync extends IPSModule
         // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
 
-        // Initial-Fallback: Falls das Attribut noch leer ist (Erstinstallation)
         if ($syncListRaw === "" || $syncListRaw === "[]") {
             $syncListRaw = $this->ReadPropertyString("SyncList");
             $this->WriteAttributeString("SyncListCache", $syncListRaw);
@@ -376,7 +378,7 @@ class RemoteSync extends IPSModule
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
 
         $cleanedSyncList = [];
-        $uniqueCheck = []; // Verhindert Dubletten im Cache
+        $uniqueCheck = [];
         $count = 0;
         $hasDeleteTask = false;
 
@@ -385,17 +387,14 @@ class RemoteSync extends IPSModule
             $folder = $item['Folder'] ?? '';
             $rootID = (int)($item['LocalRootID'] ?? 0);
 
-            // 1. EXISTENZ-CHECK: Existiert das Objekt lokal überhaupt noch?
             if ($vID === 0 || !IPS_ObjectExists($vID)) {
                 $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
                 continue;
             }
 
-            // 2. MAPPING-CHECK: Passt die Variable noch zu einem aktuellen Root/Folder?
             $mappingIsValid = false;
             foreach ($roots as $r) {
                 if (($r['TargetFolder'] ?? '') === $folder && (int)($r['LocalRootID'] ?? 0) === $rootID) {
-                    // Prüfen, ob die Variable physisch noch unter diesem Root liegt (Strukturprüfung)
                     if ($this->IsChildOf($vID, $rootID)) {
                         $mappingIsValid = true;
                         break;
@@ -408,14 +407,12 @@ class RemoteSync extends IPSModule
                 continue;
             }
 
-            // 3. DUPLIKATS-CHECK: Verhindert Mehrfach-Registrierungen
             $key = $folder . '_' . $rootID . '_' . $vID;
             if (isset($uniqueCheck[$key])) {
                 continue;
             }
             $uniqueCheck[$key] = true;
 
-            // --- VARIABLEN-REGISTRIERUNG ---
             $isDelete = !empty($item['Delete']);
             $isActive = !empty($item['Active']);
 
@@ -423,7 +420,6 @@ class RemoteSync extends IPSModule
                 $hasDeleteTask = true;
             }
 
-            // Nur registrieren, wenn aktiv und nicht zur Löschung markiert
             if ($isActive && !$isDelete) {
                 $this->RegisterMessage($vID, VM_UPDATE);
                 $count++;
@@ -431,18 +427,13 @@ class RemoteSync extends IPSModule
             $cleanedSyncList[] = $item;
         }
 
-
-
-        // Bereinigten Stand im Attribut speichern
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
         // --- STATUS & INITIALER SYNC ---
-        // Falls keine Variablen mehr aktiv sind und keine Löschungen anstehen
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104); // Inaktiv
+            $this->SetStatus(104);
         } else {
-            $this->SetStatus(102); // Aktiv
-            // Timer starten, wenn Variablen aktiv sind oder gelöscht werden müssen
+            $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
