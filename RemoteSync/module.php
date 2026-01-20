@@ -187,6 +187,29 @@ class RemoteSync extends IPSModule
 
         return json_encode($form);
     }
+
+
+    public function Destroy()
+    {
+        // 1. Timer sofort stoppen
+        $this->SetTimerInterval('StartSyncTimer', 0);
+        $this->SetTimerInterval('BufferTimer', 0);
+
+        // 2. Alle Nachrichten-Registrierungen im Kernel lösen
+        $messages = $this->GetMessageList();
+        foreach ($messages as $senderID => $messageID) {
+            $this->UnregisterMessage($senderID, VM_UPDATE);
+        }
+
+        // 3. Flüchtige Status-Attribute zurücksetzen
+        // Verhindert, dass eine neue Instanz mit einer hängenden Sperre startet
+        $this->WriteAttributeBoolean('_IsSending', false);
+        $this->WriteAttributeString('_BatchBuffer', '[]');
+
+        parent::Destroy();
+    }
+
+
     // Hilfsfunktion zum rekursiven Befüllen der statischen Formular-Elemente
     private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
     {
@@ -322,32 +345,34 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
+        // Best Practice: Warten bis der Kernel bereit ist
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
-        // [BUFFER-CHECK] Vor dem Reset prüfen, ob noch Daten im Puffer sind
-        $oldBuffer = $this->ReadAttributeString('_BatchBuffer');
-        if ($oldBuffer !== '[]' && $oldBuffer !== '') {
-            $this->Log("[BUFFER-CHECK] ApplyChanges: Existing buffer detected before reset! Length: " . strlen($oldBuffer) . " characters", KL_MESSAGE);
-        }
-
         parent::ApplyChanges();
 
+        // --- SICHERHEITS-RESET BEIM START ---
         $this->rpcClient = null;
-        $this->config = []; // Interne Konfiguration zurücksetzen
-        $this->WriteAttributeBoolean('_IsSending', false);
-        $this->WriteAttributeString('_BatchBuffer', '[]');
+        $this->config = []; // Internen Konfigurations-Cache leeren
+        $this->WriteAttributeBoolean('_IsSending', false); // Sperre hart lösen
 
-        // 1. Radikales Löschen aller alten Nachrichten-Registrierungen
+        // Timer initial stoppen, um Überschneidungen beim Umbau zu verhindern
+        $this->SetTimerInterval('BufferTimer', 0);
+        $this->SetTimerInterval('StartSyncTimer', 0);
+
+        // --- NACHRICHTEN-CLEANUP ---
+        // Wir löschen radikal alle alten Überwachungen, um "Leichen" zu vermeiden
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
             $this->UnregisterMessage($senderID, VM_UPDATE);
         }
 
-        // 2. Daten aus dem Attribut laden
+        // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
-        if ($syncListRaw === "") {
+
+        // Initial-Fallback: Falls das Attribut noch leer ist (Erstinstallation)
+        if ($syncListRaw === "" || $syncListRaw === "[]") {
             $syncListRaw = $this->ReadPropertyString("SyncList");
             $this->WriteAttributeString("SyncListCache", $syncListRaw);
         }
@@ -356,49 +381,71 @@ class RemoteSync extends IPSModule
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
 
         $cleanedSyncList = [];
-        $uniqueCheck = [];
+        $uniqueCheck = []; // Verhindert Dubletten im Cache
         $count = 0;
         $hasDeleteTask = false;
 
-        // 3. Validierung und Bereinigung
         foreach ($syncList as $item) {
             $vID = (int)($item['ObjectID'] ?? 0);
             $folder = $item['Folder'] ?? '';
             $rootID = (int)($item['LocalRootID'] ?? 0);
 
-            if ($vID === 0 || !IPS_ObjectExists($vID)) continue;
+            // 1. EXISTENZ-CHECK: Existiert das Objekt lokal überhaupt noch?
+            if ($vID === 0 || !IPS_ObjectExists($vID)) {
+                $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
+                continue;
+            }
 
-            $isValidMapping = false;
+            // 2. MAPPING-CHECK: Passt die Variable noch zu einem aktuellen Root/Folder?
+            $mappingIsValid = false;
             foreach ($roots as $r) {
                 if (($r['TargetFolder'] ?? '') === $folder && (int)($r['LocalRootID'] ?? 0) === $rootID) {
+                    // Prüfen, ob die Variable physisch noch unter diesem Root liegt (Strukturprüfung)
                     if ($this->IsChildOf($vID, $rootID)) {
-                        $isValidMapping = true;
+                        $mappingIsValid = true;
                         break;
                     }
                 }
             }
 
-            if (!$isValidMapping) continue;
+            if (!$mappingIsValid) {
+                $this->Log("Consistency Check: Dropping ID $vID - Mapping or hierarchy changed.", KL_WARNING);
+                continue;
+            }
 
+            // 3. DUPLIKATS-CHECK: Verhindert Mehrfach-Registrierungen
             $key = $folder . '_' . $rootID . '_' . $vID;
-            if (isset($uniqueCheck[$key])) continue;
+            if (isset($uniqueCheck[$key])) {
+                continue;
+            }
             $uniqueCheck[$key] = true;
 
-            if (!empty($item['Delete'])) $hasDeleteTask = true;
+            // --- VARIABLEN-REGISTRIERUNG ---
+            $isDelete = !empty($item['Delete']);
+            $isActive = !empty($item['Active']);
 
-            if (!empty($item['Active']) && empty($item['Delete'])) {
+            if ($isDelete) {
+                $hasDeleteTask = true;
+            }
+
+            // Nur registrieren, wenn aktiv und nicht zur Löschung markiert
+            if ($isActive && !$isDelete) {
                 $this->RegisterMessage($vID, VM_UPDATE);
                 $count++;
             }
             $cleanedSyncList[] = $item;
         }
 
+        // Bereinigten Stand im Attribut speichern
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
+        // --- STATUS & INITIALER SYNC ---
+        // Falls keine Variablen mehr aktiv sind und keine Löschungen anstehen
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104);
+            $this->SetStatus(104); // Inaktiv
         } else {
-            $this->SetStatus(102);
+            $this->SetStatus(102); // Aktiv
+            // Timer starten, wenn Variablen aktiv sind oder gelöscht werden müssen
             if ($count > 0 || $hasDeleteTask) {
                 $this->SetTimerInterval('StartSyncTimer', 500);
             }
