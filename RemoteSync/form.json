@@ -59,22 +59,35 @@
                 }
             ]
         },
-        { "type": "Label", "caption": "Step 3: Individual Selection per Target" },
-        {
-    "type": "ExpansionPanel",
-    "caption": "Backup & Migration",
-    "items": [
-        { "type": "Label", "caption": "Use the field below to copy an export or paste an import string." },
-        { "type": "TextArea", "name": "TransferField", "caption": "JSON Configuration Data" },
-        { "type": "RowLayout", "items": [
-            { "type": "Button", "caption": "Generate Export", "onClick": "RS_UIExport($id);" },
-            { "type": "Button", "caption": "Execute Import", "onClick": "RS_UIImport($id, $TransferField);", "confirm": "This will overwrite all current settings. Proceed?" }
-        ]}
-    ]
-}
+        { "type": "Label", "caption": "Step 3: Individual Selection per Target" }
     ],
-"actions": [
+    "actions": [
         { "type": "Label", "caption": "________________________________________________________________________________" },
-{ "type": "Button", "caption": "Force Refresh UI", "onClick": "RS_UpdateUI($id);" }
+        { "type": "Button", "caption": "Force Refresh UI", "onClick": "RS_UpdateUI($id);" },
+        {
+            "type": "ExpansionPanel",
+            "caption": "Backup & Migration",
+            "items": [
+                { "type": "Label", "caption": "Use the field below to copy an export or paste an import string." },
+                { 
+                    "type": "ValidationTextBox", 
+                    "name": "TransferField", 
+                    "caption": "JSON Configuration Data",
+                    "multiLine": true
+                },
+                { 
+                    "type": "RowLayout", 
+                    "items": [
+                        { "type": "Button", "caption": "Generate Export", "onClick": "RS_UIExport($id);" },
+                        { 
+                            "type": "Button", 
+                            "caption": "Execute Import", 
+                            "onClick": "RS_UIImport($id, $TransferField);", 
+                            "confirm": "This will overwrite all current settings. Proceed?" 
+                        }
+                    ]
+                }
+            ]
+        }
     ]
 }
