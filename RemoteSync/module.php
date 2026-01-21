@@ -180,7 +180,7 @@ class RemoteSync extends IPSModule
             ];
         }
 
-        // Globalen Footer wieder anhängen
+        // Globalen Footer  wieder anhängen
         foreach ($staticFooter as $btn) {
             $form['actions'][] = $btn;
         }
