@@ -41,13 +41,8 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString("SyncListCache", "[]");
 
         // --- TIMERS ---
-        $this->RegisterTimer('StartSyncTimer2', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('BufferTimer2', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
-
-        $this->RegisterAttributeString("TimerSuffix", "v1");
-        $suffix = $this->ReadAttributeString("TimerSuffix");
-        // Und ändern Sie die Timer-Namen in RegisterTimer:
-        $this->RegisterTimer('StartSyncTimer2_' . $suffix, 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
 
 
@@ -198,8 +193,8 @@ class RemoteSync extends IPSModule
     public function Destroy()
     {
         // Alle Timer   sicher stoppen
-        @$this->SetTimerInterval('StartSyncTimer2', 0);
-        @$this->SetTimerInterval('BufferTimer2', 0);
+        @$this->SetTimerInterval('StartSyncTimer', 0);
+        @$this->SetTimerInterval('BufferTimer', 0);
 
         // Flüchtige Zustände zurücksetzen für den Fall einer Neuinstallation mit gleicher ID
         $this->WriteAttributeBoolean('_IsSending', false);
@@ -362,8 +357,8 @@ class RemoteSync extends IPSModule
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
         // 3. Timer initial stoppen
-        $this->SetTimerInterval('BufferTimer2', 0);
-        $this->SetTimerInterval('StartSyncTimer2', 0);
+        $this->SetTimerInterval('BufferTimer', 0);
+        $this->SetTimerInterval('StartSyncTimer', 0);
 
         // --- NACHRICHTEN-CLEANUP ---
         $messages = $this->GetMessageList();
@@ -440,7 +435,7 @@ class RemoteSync extends IPSModule
         } else {
             $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
-                $this->SetTimerInterval('StartSyncTimer2', 500);
+                $this->SetTimerInterval('StartSyncTimer', 500);
             }
         }
     }
@@ -496,7 +491,7 @@ class RemoteSync extends IPSModule
 
     public function ProcessSync()
     {
-        $this->SetTimerInterval('StartSyncTimer2', 0);
+        $this->SetTimerInterval('StartSyncTimer', 0);
         if (!$this->LoadConfig()) return;
 
         $syncList = $this->config['SyncList'] ?? [];
@@ -627,7 +622,7 @@ class RemoteSync extends IPSModule
                 }
             }
         }
-        $this->SetTimerInterval('BufferTimer2', 200);
+        $this->SetTimerInterval('BufferTimer', 200);
         // ... nach dem Schreiben des Attributs ...
         if ($localID == 25458) {
             $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
@@ -787,7 +782,7 @@ class RemoteSync extends IPSModule
             return;
         }
 
-        $this->SetTimerInterval('BufferTimer2', 0);
+        $this->SetTimerInterval('BufferTimer', 0);
 
         $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
         $this->WriteAttributeString('_BatchBuffer', '[]');
@@ -880,7 +875,7 @@ class RemoteSync extends IPSModule
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
-                $this->SetTimerInterval('BufferTimer2', 200);
+                $this->SetTimerInterval('BufferTimer', 200);
             } else {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED. No more data pending.", KL_MESSAGE);
             }
