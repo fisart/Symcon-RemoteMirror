@@ -601,6 +601,9 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
+            return;
+        }
         if (!$this->LoadConfig()) return;
 
         $syncList = $this->config['SyncList'];
@@ -771,32 +774,35 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
-        // 1. Versuch, die Semaphore zu reservieren (0ms Wartezeit)
-        if (!IPS_SemaphoreEnter("RemoteSync_Lock_" . $this->InstanceID, 0)) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
+        // Guard: Wenn die Instanz nicht bereit ist, sofort abbrechen
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
-        // Ab hier sind wir im geschützten Bereich
+        // 1. Semaphore reservieren (0ms Wartezeit)
+        if (!IPS_SemaphoreEnter("RemoteSync_Lock_" . $this->InstanceID, 0)) {
+            return;
+        }
+
         try {
-            // Timer sofort stoppen, da wir jetzt aktiv sind
+            // Timer stoppen
             $this->SetTimerInterval('BufferTimer', 0);
 
-            $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-            $this->WriteAttributeString('_BatchBuffer', '[]');
-
-            $fullBuffer = json_decode($rawBuffer, true) ?: [];
-            $totalItems = 0;
-            foreach ($fullBuffer as $folder => $vars) {
-                $totalItems += count($vars);
-            }
-
-            if ($totalItems === 0) {
+            // Puffer laden (mit @ zur Sicherheit gegen InstanceInterface-Errors)
+            $rawBuffer = @$this->ReadAttributeString('_BatchBuffer');
+            if ($rawBuffer === false || $rawBuffer === "" || $rawBuffer === "[]") {
+                $this->WriteAttributeString('_BatchBuffer', '[]');
                 return;
             }
 
-            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items: $totalItems", KL_MESSAGE);
+            @$this->WriteAttributeString('_BatchBuffer', '[]');
+            $fullBuffer = json_decode($rawBuffer, true) ?: [];
 
+            if (count($fullBuffer) === 0) {
+                return;
+            }
+
+            // --- SENDELOGIK ---
             foreach ($fullBuffer as $bufferKey => $variables) {
                 $parts = explode(':', $bufferKey);
                 if (count($parts) < 2) continue;
@@ -806,50 +812,33 @@ class RemoteSync extends IPSModule
 
                 $target = $this->GetTargetConfig($folderName);
                 if (!$target || !$this->InitConnectionForFolder($target)) {
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to $folderName failed.", KL_MESSAGE);
                     continue;
-                }
-
-                $batch = array_values($variables);
-                $profiles = [];
-                if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
-                    foreach ($batch as $item) {
-                        if (!empty($item['Profile']) && !isset($profiles[$item['Profile']])) {
-                            if (IPS_VariableProfileExists($item['Profile'])) {
-                                $profiles[$item['Profile']] = IPS_GetVariableProfile($item['Profile']);
-                            }
-                        }
-                    }
                 }
 
                 $packet = [
                     'TargetID'   => $remoteRootID,
-                    'Batch'      => $batch,
-                    'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
-                    'Profiles'   => $profiles
+                    'Batch'      => array_values($variables),
+                    'AutoCreate' => $this->config['AutoCreate'],
+                    'Profiles'   => [] // Profile hier weggelassen für Phase 1 Fokus
                 ];
 
                 $jsonPacket = json_encode($packet);
-                if ($jsonPacket === false) {
-                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName.", KL_ERROR);
-                    continue;
-                }
-
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
-                if ($receiverID > 0) {
-                    $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
+
+                if ($receiverID > 0 && $this->rpcClient) {
+                    // RPC Call (blockierend)
+                    @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 }
             }
         } catch (Exception $e) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
+            $this->Log("FlushBuffer Error: " . $e->getMessage(), KL_ERROR);
         } finally {
-            // 2. Semaphore UNBEDINGT wieder freigeben
+            // 2. Semaphore UNBEDINGT freigeben
             IPS_SemaphoreLeave("RemoteSync_Lock_" . $this->InstanceID);
 
-            // Prüfen, ob während des Sendens neue Daten reingekommen sind
-            $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
-            if ($checkBuffer !== '[]' && $checkBuffer !== '') {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived. Restarting timer.", KL_MESSAGE);
+            // Nachrücken-Check
+            $checkBuffer = @$this->ReadAttributeString('_BatchBuffer');
+            if ($checkBuffer !== '[]' && $checkBuffer !== '' && $checkBuffer !== false) {
                 $this->SetTimerInterval('BufferTimer', 200);
             }
         }
@@ -1151,29 +1140,32 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
     private function LoadConfig(): bool
     {
-        // Falls die Konfiguration in diesem Prozess bereits geladen wurde, 
-        // nutzen wir den Cache (spart CPU-Last bei Massenänderungen)
+        // Falls der Kernel nicht bereit ist oder die Instanz gerade entladen wird, 
+        // schlagen ReadProperty-Aufrufe fehl.
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
+            return false;
+        }
+
         if (!empty($this->config)) {
             return true;
         }
 
         try {
+            // Wir nutzen @ (Error Suppression), um den "InstanceInterface"-Fehler 
+            // im absoluten Grenzfall zu unterdrücken, falls die Instanz exakt 
+            // während dieses Aufrufs gelöscht wird.
             $this->config = [
-                'DebugMode'              => $this->ReadPropertyBoolean('DebugMode'),
-                'AutoCreate'             => $this->ReadPropertyBoolean('AutoCreate'),
-                'ReplicateProfiles'      => $this->ReadPropertyBoolean('ReplicateProfiles'),
-                'LocalPasswordModuleID'  => $this->ReadPropertyInteger('LocalPasswordModuleID'),
-                'LocalServerKey'         => $this->ReadPropertyString('LocalServerKey'),
-
-                // Wir dekodieren die Listen hier zentral einmalig
-                'Targets'                => json_decode($this->ReadPropertyString("Targets"), true) ?? [],
-                'Roots'                  => json_decode($this->ReadPropertyString("Roots"), true) ?? [],
-                'SyncList'               => json_decode($this->ReadAttributeString("SyncListCache"), true) ?? []
+                'DebugMode'              => @$this->ReadPropertyBoolean('DebugMode'),
+                'AutoCreate'             => @$this->ReadPropertyBoolean('AutoCreate'),
+                'ReplicateProfiles'      => @$this->ReadPropertyBoolean('ReplicateProfiles'),
+                'LocalPasswordModuleID'  => @$this->ReadPropertyInteger('LocalPasswordModuleID'),
+                'LocalServerKey'         => @$this->ReadPropertyString('LocalServerKey'),
+                'Targets'                => json_decode(@$this->ReadPropertyString("Targets"), true) ?? [],
+                'Roots'                  => json_decode(@$this->ReadPropertyString("Roots"), true) ?? [],
+                'SyncList'               => json_decode(@$this->ReadAttributeString("SyncListCache"), true) ?? []
             ];
-
             return true;
         } catch (Exception $e) {
-            $this->Log("LoadConfig Error: " . $e->getMessage(), KL_ERROR);
             return false;
         }
     }
