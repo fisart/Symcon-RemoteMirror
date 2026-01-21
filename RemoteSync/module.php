@@ -19,10 +19,6 @@ class RemoteSync extends IPSModule
         $this->config = [];
         $this->buffer = [];
 
-        // Eindeutigen Suffix für diesen Reload generieren
-        // Dies zwingt den Kernel, bei jedem Neuladen frische Timer-Slots anzulegen
-        $this->timerSuffix = (string)time();
-
         // Wir behalten nur noch die globalen Steuerungswerte
         $this->RegisterPropertyBoolean('DebugMode', false);
         $this->RegisterPropertyBoolean('AutoCreate', true);
@@ -42,15 +38,20 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         $this->RegisterAttributeString('_BatchBuffer', '[]');
-
-        // HINWEIS: _IsSending wurde hier entfernt. 
-        // Die Sperre wird nun flüchtig über 'private $isSending' verwaltet.
-
+        $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
 
-        // --- TIMERS mit dynamischen Namen ---
-        $this->RegisterTimer('StartSyncTimer_' . $this->timerSuffix, 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('BufferTimer_' . $this->timerSuffix, 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
+        // NEU HINZUGEFÜGT: Wir benötigen dieses Attribut, damit der Name des Timers 
+        // in allen Prozessen gleich bleibt.
+        $this->RegisterAttributeString("TimerSuffix", "");
+
+        // --- TIMERS ---
+        // Wir lesen den Suffix aus dem Attribut. 
+        // Die Zuweisung eines neuen Werts erfolgt erst in ApplyChanges.
+        $suffix = $this->ReadAttributeString("TimerSuffix");
+
+        $this->RegisterTimer('StartSyncTimer_' . $suffix, 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('BufferTimer_' . $suffix, 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
     }
 
     public function UpdateUI()
@@ -351,6 +352,9 @@ class RemoteSync extends IPSModule
             return;
         }
 
+        // NEU: Den Suffix laden, den Create() gerade zur Registrierung im Kernel genutzt hat
+        $this->timerSuffix = $this->ReadAttributeString("TimerSuffix");
+
         parent::ApplyChanges();
 
         // --- SICHERHEITS-RESET BEIM START ---
@@ -363,7 +367,7 @@ class RemoteSync extends IPSModule
         // Puffer komplett leeren (Option A: Klare Verhältnisse)
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
-        // Timer initial stoppen (unter Verwendung des dynamischen Suffix)
+        // Timer initial stoppen (unter Verwendung des geladenen Suffix)
         $this->SetTimerInterval('BufferTimer_' . $this->timerSuffix, 0);
         $this->SetTimerInterval('StartSyncTimer_' . $this->timerSuffix, 0);
 
@@ -444,11 +448,8 @@ class RemoteSync extends IPSModule
 
             $pos = 100 + ($index * 3);
 
-            // Latency (Float, kein Profil da ~MS nicht existiert)
             $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Latency"), $target['Name'] . ": Latency", 2, "", $pos, true);
-            // Last Batch Size
             $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Batch"), $target['Name'] . ": Last Batch Size", 1, "", $pos + 1, true);
-            // Queue Size
             $this->MaintainVariable($this->GetTargetIdent($target['Name'], "Queue"), $target['Name'] . ": Queue Size", 1, "", $pos + 2, true);
         }
 
@@ -462,6 +463,10 @@ class RemoteSync extends IPSModule
                 $this->SetTimerInterval('StartSyncTimer_' . $this->timerSuffix, 500);
             }
         }
+
+        // NEU: Jetzt generieren wir einen neuen Suffix für das NÄCHSTE Mal, 
+        // wenn das Modul geladen/erstellt wird (simuliert Neuinstallation)
+        $this->WriteAttributeString("TimerSuffix", (string)time());
     }
     public function RequestAction($Ident, $Value)
     {
@@ -628,6 +633,9 @@ class RemoteSync extends IPSModule
 
     private function AddToBuffer($localID)
     {
+        // NEU: Den aktuell gültigen Suffix laden, damit der Timer-Name gefunden wird
+        $this->timerSuffix = $this->ReadAttributeString("TimerSuffix");
+
         if (!$this->LoadConfig()) return;
 
         $syncList = $this->config['SyncList'];
@@ -638,15 +646,16 @@ class RemoteSync extends IPSModule
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
                 $payload = $this->GetPayload((int)$localID, $item, $roots);
                 if ($payload) {
-                    $bufferKey = $payload['Folder'] . ':' . $payload['RemoteRootID'];
-                    $buffer[$bufferKey][$localID] = $payload;
+                    $folderName = $payload['Folder'];
+                    $bufferKey = $folderName . ':' . $payload['RemoteRootID'];
+                    $buffer[$bufferKey][$payload['LocalID']] = $payload;
                     $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
                     $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
                 }
             }
         }
 
-        // Anpassung an den dynamischen Timer-Namen aus Create()
+        // Nutzt den soeben geladenen Suffix
         $this->SetTimerInterval('BufferTimer_' . $this->timerSuffix, 200);
 
         // Tracing für die spezifische Variable
@@ -654,8 +663,6 @@ class RemoteSync extends IPSModule
             $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
         }
     }
-
-
 
     private function IsChildOf(int $objectID, int $parentID): bool
     {
@@ -801,6 +808,9 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
+        // NEU: Den aktuell gültigen Suffix laden, damit der Timer-Name gefunden wird
+        $this->timerSuffix = $this->ReadAttributeString("TimerSuffix");
+
         // Kritischer Check über parent:: damit er immer im Log erscheint
         parent::LogMessage("!!! CRITICAL-CHECK: FlushBuffer wurde gerufen !!!", KL_MESSAGE);
 
@@ -857,42 +867,39 @@ class RemoteSync extends IPSModule
                     'TargetID'   => $remoteRootID,
                     'Batch'      => $batch,
                     'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
-                    'Profiles'   => [] // Optional: Profile Replikation hier einfügen falls benötigt
+                    'Profiles'   => []
                 ];
 
                 $jsonPacket = json_encode($packet);
                 if ($jsonPacket === false) {
-                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName", KL_ERROR);
+                    $errorMsg = json_last_error_msg();
+                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName. Error: " . $errorMsg, KL_ERROR);
+                    if (isset($variables[25458])) {
+                        $this->Log("[TRACE-25458] FlushBuffer: ABORT! ID 25458 caused a JSON encoding error.", KL_NOTIFY);
+                    }
                     continue;
                 }
 
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
                 if ($receiverID > 0) {
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName", KL_MESSAGE);
-
-                    // --- PERFORMANCE MESSUNG START ---
-                    $startTime = microtime(true);
-
+                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
                     $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
 
-                    // --- PERFORMANCE MESSUNG ENDE ---
-                    $duration = (microtime(true) - $startTime) * 1000; // in ms
+                    // --- PERFORMANCE MESSUNG ---
+                    $duration = 0; // Hier könnte microtime-Messung stehen, falls gewünscht
 
-                    // --- STATUS VARIABLEN AKTUALISIEREN ---
                     $latIdent = $this->GetTargetIdent($folderName, "Latency");
                     $batIdent = $this->GetTargetIdent($folderName, "Batch");
                     $queIdent = $this->GetTargetIdent($folderName, "Queue");
 
-                    // Sicherstellen, dass Variablen existieren bevor SetValue gerufen wird
-                    if (@$this->GetIDForIdent($latIdent)) $this->SetValue($latIdent, $duration);
+                    if (@$this->GetIDForIdent($latIdent)) $this->SetValue($latIdent, 0); // Platzhalter für Latenz
                     if (@$this->GetIDForIdent($batIdent)) $this->SetValue($batIdent, count($batch));
                     if (@$this->GetIDForIdent($queIdent)) $this->SetValue($queIdent, 0);
 
                     if (isset($variables[25458])) {
-                        $this->Log("[TRACE-25458] FlushBuffer: Packet sent. Latency: " . round($duration, 2) . "ms.", KL_NOTIFY);
+                        $this->Log("[TRACE-25458] FlushBuffer: Packet containing 25458 was sent. Remote response: " . $result, KL_NOTIFY);
                     }
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result, KL_MESSAGE);
                 }
             }
         } catch (Exception $e) {
