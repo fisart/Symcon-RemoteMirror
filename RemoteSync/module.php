@@ -1239,6 +1239,13 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
             return false;
         }
     }
+
+    private function GetTargetIdent(string $TargetName, string $Suffix): string
+    {
+        // Entfernt alle Sonderzeichen, um einen gültigen Ident zu erzeugen
+        $safeName = preg_replace('/[^A-Za-z0-9]/', '', $TargetName);
+        return "Tgt_" . $safeName . "_" . $Suffix;
+    }
 }
 
 
