@@ -43,6 +43,11 @@ class RemoteSync extends IPSModule
         // --- TIMERS ---
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
         $this->RegisterTimer('BufferTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\']);');
+
+        $this->RegisterAttributeString("TimerSuffix", "v1");
+        $suffix = $this->ReadAttributeString("TimerSuffix");
+        // Und ändern Sie die Timer-Namen in RegisterTimer:
+        $this->RegisterTimer('StartSyncTimer_' . $suffix, 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
     }
 
 
