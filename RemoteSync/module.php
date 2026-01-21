@@ -622,7 +622,7 @@ class RemoteSync extends IPSModule
             }
         }
         $this->SetTimerInterval('BufferTimer', 200);
-        // ... nach dem Schreiben des Attributs ...
+        // ... ..nach dem Schreiben des Attributs ...
         if ($localID == 25458) {
             $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
         }
