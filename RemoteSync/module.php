@@ -197,7 +197,6 @@ class RemoteSync extends IPSModule
         @$this->SetTimerInterval('BufferTimer', 0);
 
         // Flüchtige Zustände zurücksetzen für den Fall einer Neuinstallation mit gleicher ID
-        $this->WriteAttributeBoolean('_IsSending', false);
         $this->WriteAttributeString('_BatchBuffer', '[]');
 
         parent::Destroy();
@@ -349,9 +348,6 @@ class RemoteSync extends IPSModule
         // --- SICHERHEITS-RESET (Option A: Klare Verhältnisse) ---
         $this->rpcClient = null;
         $this->config = [];
-
-        // 1. Sperre hart lösen (verhindert hängendes "Busy"-Schild)
-        $this->WriteAttributeBoolean('_IsSending', false);
 
         // 2. Puffer komplett leeren (Option A)
         $this->WriteAttributeString('_BatchBuffer', '[]');
@@ -775,45 +771,38 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer()
     {
-        IPS_LogMessage("RemoteSync_Test", "!!! TIMER-CHECK: Ich bin in FlushBuffer gelandet !!!");
-
-        if ($this->ReadAttributeBoolean('_IsSending')) {
+        // 1. Versuch, die Semaphore zu reservieren (0ms Wartezeit)
+        if (!IPS_SemaphoreEnter("RemoteSync_Lock_" . $this->InstanceID, 0)) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy)", KL_MESSAGE);
             return;
         }
 
-        $this->SetTimerInterval('BufferTimer', 0);
-
-        $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-        $this->WriteAttributeString('_BatchBuffer', '[]');
-
-        $fullBuffer = json_decode($rawBuffer, true) ?: [];
-
-        $totalItems = 0;
-        foreach ($fullBuffer as $folder => $vars) {
-            $totalItems += count($vars);
-        }
-
-        if ($totalItems === 0) {
-            return;
-        }
-
-        $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch: $totalItems", KL_MESSAGE);
-
-        $this->WriteAttributeBoolean('_IsSending', true);
-
+        // Ab hier sind wir im geschützten Bereich
         try {
+            // Timer sofort stoppen, da wir jetzt aktiv sind
+            $this->SetTimerInterval('BufferTimer', 0);
+
+            $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
+            $this->WriteAttributeString('_BatchBuffer', '[]');
+
+            $fullBuffer = json_decode($rawBuffer, true) ?: [];
+            $totalItems = 0;
+            foreach ($fullBuffer as $folder => $vars) {
+                $totalItems += count($vars);
+            }
+
+            if ($totalItems === 0) {
+                return;
+            }
+
+            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items: $totalItems", KL_MESSAGE);
+
             foreach ($fullBuffer as $bufferKey => $variables) {
                 $parts = explode(':', $bufferKey);
                 if (count($parts) < 2) continue;
 
                 $folderName = $parts[0];
                 $remoteRootID = (int)$parts[1];
-
-                // --- TRACE LOGIK FÜR ID 25458 ---
-                if (isset($variables[25458])) {
-                    $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch for folder '$folderName'. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
-                }
 
                 $target = $this->GetTargetConfig($folderName);
                 if (!$target || !$this->InitConnectionForFolder($target)) {
@@ -822,7 +811,6 @@ class RemoteSync extends IPSModule
                 }
 
                 $batch = array_values($variables);
-
                 $profiles = [];
                 if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                     foreach ($batch as $item) {
@@ -841,43 +829,28 @@ class RemoteSync extends IPSModule
                     'Profiles'   => $profiles
                 ];
 
-                // --- JSON VALIDIERUNG ---
                 $jsonPacket = json_encode($packet);
                 if ($jsonPacket === false) {
-                    $errorMsg = json_last_error_msg();
-                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName. Error: " . $errorMsg, KL_ERROR);
-                    if (isset($variables[25458])) {
-                        $this->Log("[TRACE-25458] FlushBuffer: ABORT! ID 25458 caused a JSON encoding error (likely invalid UTF-8 characters).", KL_NOTIFY);
-                    }
+                    $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed for $folderName.", KL_ERROR);
                     continue;
                 }
 
                 $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
-
                 if ($receiverID > 0) {
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to $folderName (Receiver: $receiverID)", KL_MESSAGE);
-                    $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
-
-                    if (isset($variables[25458])) {
-                        $this->Log("[TRACE-25458] FlushBuffer: Packet containing 25458 was sent. Remote response: " . $result, KL_NOTIFY);
-                    } else {
-                        $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response from $folderName: " . $result, KL_MESSAGE);
-                    }
-                } else {
-                    $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Receiver script not found on $folderName", KL_MESSAGE);
+                    $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 }
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXCEPTION - " . $e->getMessage(), KL_MESSAGE);
         } finally {
-            $this->WriteAttributeBoolean('_IsSending', false);
+            // 2. Semaphore UNBEDINGT wieder freigeben
+            IPS_SemaphoreLeave("RemoteSync_Lock_" . $this->InstanceID);
 
+            // Prüfen, ob während des Sendens neue Daten reingekommen sind
             $checkBuffer = $this->ReadAttributeString('_BatchBuffer');
             if ($checkBuffer !== '[]' && $checkBuffer !== '') {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission. Restarting timer.", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived. Restarting timer.", KL_MESSAGE);
                 $this->SetTimerInterval('BufferTimer', 200);
-            } else {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED. No more data pending.", KL_MESSAGE);
             }
         }
     }
