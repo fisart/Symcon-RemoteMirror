@@ -195,6 +195,9 @@ class RemoteSync extends IPSModule
         // Alle Timer sicher stoppen
         @$this->SetTimerInterval('StartSyncTimer', 0);
 
+        // Performance-Variablen sauber entfernen
+        $this->DeletePerformanceVariables();
+
         parent::Destroy();
     }
 
@@ -417,23 +420,6 @@ class RemoteSync extends IPSModule
 
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
-        // --- PERFORMANCE VARIABLE MAINTENANCE ---
-        foreach ($roots as $root) {
-            if (!isset($root['LocalRootID']) || $root['LocalRootID'] == 0) continue;
-
-            // WICHTIG: Ident darf max 32 Zeichen lang sein. MD5 (32) + Präfix wäre zu lang.
-            // Wir nutzen daher nur die ersten 20 Zeichen des MD5-Hash.
-            $shortHash = substr(md5(($root['TargetFolder'] ?? '') . $root['LocalRootID']), 0, 20);
-            $rootName = IPS_ObjectExists($root['LocalRootID']) ? IPS_GetName($root['LocalRootID']) : "ID " . $root['LocalRootID'];
-            $caption = $root['TargetFolder'] . " (" . $rootName . ")";
-
-            // 1. RTT Variable
-            $this->MaintainVariable("RTT_" . $shortHash, "RTT: " . $caption, 2, "ms", 0, true);
-
-            // 2. Batch Variable
-            $this->MaintainVariable("Batch_" . $shortHash, "Batch: " . $caption, 1, "Items", 0, true);
-        }
-
         // --- STATUS & INITIALER SYNC ---
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
             $this->SetStatus(104);
@@ -546,6 +532,7 @@ class RemoteSync extends IPSModule
 
         return [
             'LocalID'      => $localID,
+            'LocalSetID'   => $localRootID, // Identifikator für die Performance-Variable
             'RemoteRootID' => $remoteRootID, // Hilfswert für die Gruppierung
             'Folder'       => $folderName,   // Hilfswert
             'Value'        => GetValue($localID),
@@ -696,6 +683,38 @@ class RemoteSync extends IPSModule
         echo $result['status'] ? "Success" : "Error";
     }
 
+    public function InstallPerformanceVariables()
+    {
+        $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
+        $count = 0;
+        foreach ($roots as $root) {
+            $localID = (int)($root['LocalRootID'] ?? 0);
+            if ($localID === 0) continue;
+
+            $objectName = IPS_ObjectExists($localID) ? IPS_GetName($localID) : "ID " . $localID;
+            $folder = $root['TargetFolder'] ?? 'Unknown';
+
+            $this->MaintainVariable("RTT_" . $localID, "RTT: " . $objectName . " (" . $folder . ")", 2, "ms", 0, true);
+            $this->MaintainVariable("Batch_" . $localID, "Batch: " . $objectName . " (" . $folder . ")", 1, "Items", 0, true);
+            $count++;
+        }
+        echo "Successfully installed performance variables for $count sets.";
+    }
+
+    public function DeletePerformanceVariables()
+    {
+        // Wir scannen alle Mappings, um die entsprechenden Variablen gezielt zu löschen
+        $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
+        foreach ($roots as $root) {
+            $localID = (int)($root['LocalRootID'] ?? 0);
+            if ($localID > 0) {
+                @$this->MaintainVariable("RTT_" . $localID, "", 2, "", 0, false);
+                @$this->MaintainVariable("Batch_" . $localID, "", 1, "", 0, false);
+            }
+        }
+        echo "Performance variables deleted.";
+    }
+
 
     public function Log(string $Message, int $Type = KL_MESSAGE)
     {
@@ -745,6 +764,7 @@ class RemoteSync extends IPSModule
 
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($firstVar['Folder']);
+            $localSetID = (int)($firstVar['LocalSetID'] ?? 0);
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $firstVar['Folder'] . " failed.", KL_ERROR);
@@ -797,10 +817,11 @@ class RemoteSync extends IPSModule
                 // MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // UPDATE PERFORMANCE VARIABLES (Wir nutzen hier den gleichen gekürzten Ident)
-                $shortHash = substr($MappingID, 0, 20);
-                @$this->SetValue($this->GetIDForIdent("RTT_" . $shortHash), $duration);
-                @$this->SetValue($this->GetIDForIdent("Batch_" . $shortHash), count($batch));
+                // UPDATE PERFORMANCE VARIABLES
+                if ($localSetID > 0) {
+                    @$this->SetValue($this->GetIDForIdent("RTT_" . $localSetID), $duration);
+                    @$this->SetValue($this->GetIDForIdent("Batch_" . $localSetID), count($batch));
+                }
 
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }

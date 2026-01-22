@@ -63,6 +63,20 @@
     ],
     "actions": [
         { "type": "Label", "caption": "________________________________________________________________________________" },
+        {
+            "type": "ExpansionPanel",
+            "caption": "Performance Monitoring",
+            "items": [
+                { "type": "Label", "caption": "Create or remove variables to track latency and batch sizes." },
+                { 
+                    "type": "RowLayout", 
+                    "items": [
+                        { "type": "Button", "caption": "Install Performance Variables", "onClick": "RS_InstallPerformanceVariables($id);" },
+                        { "type": "Button", "caption": "Delete Performance Variables", "onClick": "RS_DeletePerformanceVariables($id);", "confirm": "Are you sure you want to delete all performance sensors?" }
+                    ]
+                }
+            ]
+        },
         { "type": "Button", "caption": "Force Refresh UI", "onClick": "RS_UpdateUI($id);" },
         {
             "type": "ExpansionPanel",
