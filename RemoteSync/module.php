@@ -694,8 +694,8 @@ class RemoteSync extends IPSModule
             $objectName = IPS_ObjectExists($localID) ? IPS_GetName($localID) : "ID " . $localID;
             $folder = $root['TargetFolder'] ?? 'Unknown';
 
-            $this->MaintainVariable("RTT_" . $localID, "RTT: " . $objectName . " (" . $folder . ")", 2, "ms", 0, true);
-            $this->MaintainVariable("Batch_" . $localID, "Batch: " . $objectName . " (" . $folder . ")", 1, "Items", 0, true);
+            $this->MaintainVariable("RTT_" . $localID, "RTT: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
+            $this->MaintainVariable("Batch_" . $localID, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
