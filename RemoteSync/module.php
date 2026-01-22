@@ -816,7 +816,7 @@ class RemoteSync extends IPSModule
 
                 // MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
-
+                $this->Log("[PERF-DEBUG] Mapping: $MappingID, SetID: $localSetID, Ident: RTT_$localSetID", KL_MESSAGE);
                 // UPDATE PERFORMANCE VARIABLES
                 if ($localSetID > 0) {
                     @$this->SetValue($this->GetIDForIdent("RTT_" . $localSetID), $duration);
