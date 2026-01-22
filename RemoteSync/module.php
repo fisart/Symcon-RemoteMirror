@@ -195,9 +195,6 @@ class RemoteSync extends IPSModule
         // Alle Timer sicher stoppen
         @$this->SetTimerInterval('StartSyncTimer', 0);
 
-        // Performance- Variablen sauber entfernen
-
-
         parent::Destroy();
     }
 
@@ -694,8 +691,12 @@ class RemoteSync extends IPSModule
             $objectName = IPS_ObjectExists($localID) ? IPS_GetName($localID) : "ID " . $localID;
             $folder = $root['TargetFolder'] ?? 'Unknown';
 
-            $this->MaintainVariable("RTT_" . $localID, "RTT: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
-            $this->MaintainVariable("Batch_" . $localID, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
+            // Eindeutiger Ident basierend auf dem Kurz-Hash des Sets (max 32 Chars)
+            $mappingID = md5($folder . $localID);
+            $short = substr($mappingID, 0, 20);
+
+            $this->MaintainVariable("R" . $short, "RTT: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
+            $this->MaintainVariable("B" . $short, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -707,9 +708,12 @@ class RemoteSync extends IPSModule
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
         foreach ($roots as $root) {
             $localID = (int)($root['LocalRootID'] ?? 0);
+            $folder = $root['TargetFolder'] ?? 'Unknown';
             if ($localID > 0) {
-                @$this->MaintainVariable("RTT_" . $localID, "", 2, "", 0, false);
-                @$this->MaintainVariable("Batch_" . $localID, "", 1, "", 0, false);
+                $mappingID = md5($folder . $localID);
+                $short = substr($mappingID, 0, 20);
+                @$this->MaintainVariable("R" . $short, "", 2, "", 0, false);
+                @$this->MaintainVariable("B" . $short, "", 1, "", 0, false);
             }
         }
         echo "Performance variables deleted.";
@@ -764,7 +768,6 @@ class RemoteSync extends IPSModule
 
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($firstVar['Folder']);
-            $localSetID = (int)($firstVar['LocalSetID'] ?? 0);
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $firstVar['Folder'] . " failed.", KL_ERROR);
@@ -816,21 +819,17 @@ class RemoteSync extends IPSModule
 
                 // MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
-                $this->Log("[PERF-DEBUG] Mapping: $MappingID, SetID: $localSetID, Ident: RTT_$localSetID", KL_MESSAGE);
-                // UPDATE PERFORMANCE VARIABLES
-                if ($localSetID > 0) {
-                    // 1. RTT Variable völlig lautlos suchen
-                    $rttVarID = @IPS_GetObjectIDByIdent("RTT_" . $localSetID, $this->InstanceID);
-                    if ($rttVarID > 0) {
-                        SetValue($rttVarID, $duration);
-                    }
 
-                    // 2. Batch Variable völlig lautlos suchen
-                    $batchVarID = @IPS_GetObjectIDByIdent("Batch_" . $localSetID, $this->InstanceID);
-                    if ($batchVarID > 0) {
-                        SetValue($batchVarID, count($batch));
-                    }
-                }
+                // UPDATE PERFORMANCE VARIABLES (Wir nutzen hier den gekürzten Ident des aktuellen MappingID)
+                $short = substr($MappingID, 0, 20);
+
+                $rttVarID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
+                if ($rttVarID > 0) SetValue($rttVarID, $duration);
+
+                $batchVarID = @IPS_GetObjectIDByIdent("B" . $short, $this->InstanceID);
+                if ($batchVarID > 0) SetValue($batchVarID, count($batch));
+
+                $this->Log("[PERF-DEBUG] Mapping: $MappingID, IdentShort: $short, Time: $duration ms", KL_MESSAGE);
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
