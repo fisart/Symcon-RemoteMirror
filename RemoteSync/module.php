@@ -196,7 +196,7 @@ class RemoteSync extends IPSModule
         @$this->SetTimerInterval('StartSyncTimer', 0);
 
         // Performance-Variablen sauber entfernen
-        $this->DeletePerformanceVariables();
+
 
         parent::Destroy();
     }
