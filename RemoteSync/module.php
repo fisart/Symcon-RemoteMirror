@@ -1044,7 +1044,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
     private function LoadConfig(): bool
     {
-        // Falls die Konfiguration in diesem Prozess bereits geladen wurde, 
+        // Falls  die Konfiguration in diesem Prozess bereits geladen wurde, 
         // nutzen wir den Cache (spart CPU-Last bei Massenänderungen)
         if (!empty($this->config)) {
             return true;
