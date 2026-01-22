@@ -1,9 +1,11 @@
+// Version 1.5.1
 <?php
 
 declare(strict_types=1);
 
 class RemoteSync extends IPSModule
 {
+    const VERSION = '1.5.1';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -697,6 +699,8 @@ class RemoteSync extends IPSModule
 
             $this->MaintainVariable("R" . $short, "RTT: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $this->MaintainVariable("B" . $short, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
+            $this->MaintainVariable("S" . $short, "Size: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
+            $this->MaintainVariable("E" . $short, "Errors: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -714,6 +718,8 @@ class RemoteSync extends IPSModule
                 $short = substr($mappingID, 0, 20);
                 @$this->MaintainVariable("R" . $short, "", 2, "", 0, false);
                 @$this->MaintainVariable("B" . $short, "", 1, "", 0, false);
+                @$this->MaintainVariable("S" . $short, "", 2, "", 0, false);
+                @$this->MaintainVariable("E" . $short, "", 1, "", 0, false);
             }
         }
         echo "Performance variables deleted.";
@@ -742,6 +748,7 @@ class RemoteSync extends IPSModule
         }
 
         $lockName = "RS_Lock_" . $this->InstanceID . "_" . $MappingID;
+        $short = substr($MappingID, 0, 20);
 
         // Der Worker-Thread versucht hier als Erstes, die Semaphore zu betreten.
         if (!IPS_SemaphoreEnter($lockName, 0)) {
@@ -807,33 +814,40 @@ class RemoteSync extends IPSModule
                 return;
             }
 
+            // VOLUMETRIC MEASUREMENT
+            $sizeKB = round(strlen($jsonPacket) / 1024, 2);
+
             $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
             if ($receiverID > 0 && $this->rpcClient) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to " . $firstVar['Folder'], KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items (" . $sizeKB . " KB) to " . $firstVar['Folder'], KL_MESSAGE);
 
-                // MEASUREMENT START
+                // TEMPORAL MEASUREMENT START
                 $startTime = microtime(true);
 
                 $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
 
-                // MEASUREMENT END
+                // TEMPORAL MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // UPDATE PERFORMANCE VARIABLES (Wir nutzen hier den gekürzten Ident des aktuellen MappingID)
-                $short = substr($MappingID, 0, 20);
-
+                // UPDATE PERFORMANCE VARIABLES
                 $rttVarID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
                 if ($rttVarID > 0) SetValue($rttVarID, $duration);
 
                 $batchVarID = @IPS_GetObjectIDByIdent("B" . $short, $this->InstanceID);
                 if ($batchVarID > 0) SetValue($batchVarID, count($batch));
 
-                $this->Log("[PERF-DEBUG] Mapping: $MappingID, IdentShort: $short, Time: $duration ms", KL_MESSAGE);
+                $sizeVarID = @IPS_GetObjectIDByIdent("S" . $short, $this->InstanceID);
+                if ($sizeVarID > 0) SetValue($sizeVarID, $sizeKB);
+
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
+
+            // ERROR COUNTER MEASUREMENT
+            $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
+            if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
         } finally {
             // Semaphore UNBEDINGT wieder freigeben
             IPS_SemaphoreLeave($lockName);
