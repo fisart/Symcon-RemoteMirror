@@ -421,15 +421,17 @@ class RemoteSync extends IPSModule
         foreach ($roots as $root) {
             if (!isset($root['LocalRootID']) || $root['LocalRootID'] == 0) continue;
 
-            $mappingID = md5(($root['TargetFolder'] ?? '') . $root['LocalRootID']);
+            // WICHTIG: Ident darf max 32 Zeichen lang sein. MD5 (32) + Präfix wäre zu lang.
+            // Wir nutzen daher nur die ersten 20 Zeichen des MD5-Hash.
+            $shortHash = substr(md5(($root['TargetFolder'] ?? '') . $root['LocalRootID']), 0, 20);
             $rootName = IPS_ObjectExists($root['LocalRootID']) ? IPS_GetName($root['LocalRootID']) : "ID " . $root['LocalRootID'];
             $caption = $root['TargetFolder'] . " (" . $rootName . ")";
 
             // 1. RTT Variable
-            $this->MaintainVariable("RTT_" . $mappingID, "RTT: " . $caption, 2, "ms", 0, true);
+            $this->MaintainVariable("RTT_" . $shortHash, "RTT: " . $caption, 2, "ms", 0, true);
 
             // 2. Batch Variable
-            $this->MaintainVariable("Batch_" . $mappingID, "Batch: " . $caption, 1, "Items", 0, true);
+            $this->MaintainVariable("Batch_" . $shortHash, "Batch: " . $caption, 1, "Items", 0, true);
         }
 
         // --- STATUS & INITIALER SYNC ---
@@ -795,9 +797,10 @@ class RemoteSync extends IPSModule
                 // MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // UPDATE PERFORMANCE VARIABLES
-                @$this->SetValue($this->GetIDForIdent("RTT_" . $MappingID), $duration);
-                @$this->SetValue($this->GetIDForIdent("Batch_" . $MappingID), count($batch));
+                // UPDATE PERFORMANCE VARIABLES (Wir nutzen hier den gleichen gekürzten Ident)
+                $shortHash = substr($MappingID, 0, 20);
+                @$this->SetValue($this->GetIDForIdent("RTT_" . $shortHash), $duration);
+                @$this->SetValue($this->GetIDForIdent("Batch_" . $shortHash), count($batch));
 
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
