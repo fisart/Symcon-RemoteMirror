@@ -41,9 +41,10 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString("SyncListCache", "[]");
 
         // --- TIMERS ---
+        // StartSyncTimer dient nur noch dem initialen Anstoß nach dem Laden
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
-        // Der YieldTimer dient dem 0ms-Nachrücken für ein spezifisches Set (MappingID)
-        $this->RegisterTimer('YieldTimer', 0, 'RS_FlushBuffer($_IPS[\'TARGET\'], $_IPS[\'DATA\']);');
+
+        // Wir benötigen hier keinen statischen YieldTimer mehr, da wir dynamisch triggern.
     }
 
 
@@ -195,7 +196,6 @@ class RemoteSync extends IPSModule
     {
         // Alle Timer sicher stoppen
         @$this->SetTimerInterval('StartSyncTimer', 0);
-        @$this->SetTimerInterval('YieldTimer', 0);
 
         parent::Destroy();
     }
@@ -348,7 +348,6 @@ class RemoteSync extends IPSModule
         $this->config = [];
 
         // 1. Timer initial stoppen
-        $this->SetTimerInterval('YieldTimer', 0);
         $this->SetTimerInterval('StartSyncTimer', 0);
 
         // --- NACHRICHTEN-CLEANUP ---
@@ -592,9 +591,10 @@ class RemoteSync extends IPSModule
                     // 3. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $mappingID;
                     if (IPS_SemaphoreEnter($lockName, 0)) {
-                        // Da wir die Semaphore bereits halten, triggern wir den YieldTimer (0ms)
-                        $this->SetTimerInterval('YieldTimer', 0);
-                        IPS_SetTimerParameter('YieldTimer', 'DATA', $mappingID);
+                        // KORREKTUR: Wir triggern den Worker asynchron über RunScriptText
+                        // Dies startet sofort einen neuen PHP-Thread und vermeidet Recursion.
+                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $mappingID . "');";
+                        @IPS_RunScriptText($script);
                     }
                 }
             }
@@ -699,15 +699,13 @@ class RemoteSync extends IPSModule
         $lockName = "RS_Lock_" . $this->InstanceID . "_" . $MappingID;
 
         // Wir stellen sicher, dass wir die Semaphore halten.
-        // Falls wir nicht über den Yield-Mechanismus kommen (z.B. initial), versuchen wir sie hier.
-        if (IPS_GetTimerInterval($this->InstanceID, 'YieldTimer') == 0) {
-            if (!IPS_SemaphoreEnter($lockName, 0)) return;
+        // Falls wir über IPS_RunScriptText kommen, müssen wir sie hier erneut prüfen/setzen, 
+        // da IPS_RunScriptText einen neuen Scope startet.
+        if (!IPS_SemaphoreEnter($lockName, 0)) {
+            return;
         }
 
         try {
-            // Timer für dieses Set stoppen
-            $this->SetTimerInterval('YieldTimer', 0);
-
             $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
             $fullBuffer = json_decode($rawBuffer, true) ?: [];
 
@@ -717,7 +715,7 @@ class RemoteSync extends IPSModule
 
             $variables = $fullBuffer[$MappingID];
 
-            // Puffer-Segment sofort leeren (Last-Value-Wins innerhalb des Zyklus)
+            // Puffer-Segment sofort leeren
             unset($fullBuffer[$MappingID]);
             $this->WriteAttributeString('_BatchBuffer', json_encode($fullBuffer));
 
@@ -760,13 +758,12 @@ class RemoteSync extends IPSModule
             // Semaphore freigeben
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check: Sind neue Daten für DIESES Set reingekommen?
+            // Yield-Check: Sind neue Daten für DIESES Set reingekommen während wir gesendet haben?
             $checkBuffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
             if (isset($checkBuffer[$MappingID]) && count($checkBuffer[$MappingID]) > 0) {
-                if (IPS_SemaphoreEnter($lockName, 0)) {
-                    $this->SetTimerInterval('YieldTimer', 0);
-                    IPS_SetTimerParameter('YieldTimer', 'DATA', $MappingID);
-                }
+                // Wir stoßen den nächsten Durchlauf asynchron an
+                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');";
+                @IPS_RunScriptText($script);
             }
         }
     }
