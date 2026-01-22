@@ -819,16 +819,16 @@ class RemoteSync extends IPSModule
                 $this->Log("[PERF-DEBUG] Mapping: $MappingID, SetID: $localSetID, Ident: RTT_$localSetID", KL_MESSAGE);
                 // UPDATE PERFORMANCE VARIABLES
                 if ($localSetID > 0) {
-                    // 1. RTT Variable sicher suchen und beschreiben
-                    $rttVarID = @$this->GetIDForIdent("RTT_" . $localSetID);
+                    // 1. RTT Variable völlig lautlos suchen
+                    $rttVarID = @IPS_GetObjectIDByIdent("RTT_" . $localSetID, $this->InstanceID);
                     if ($rttVarID > 0) {
-                        $this->SetValue($rttVarID, $duration);
+                        SetValue($rttVarID, $duration);
                     }
 
-                    // 2. Batch Variable sicher suchen und beschreiben
-                    $batchVarID = @$this->GetIDForIdent("Batch_" . $localSetID);
+                    // 2. Batch Variable völlig lautlos suchen
+                    $batchVarID = @IPS_GetObjectIDByIdent("Batch_" . $localSetID, $this->InstanceID);
                     if ($batchVarID > 0) {
-                        $this->SetValue($batchVarID, count($batch));
+                        SetValue($batchVarID, count($batch));
                     }
                 }
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
