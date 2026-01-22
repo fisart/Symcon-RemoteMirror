@@ -41,10 +41,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString("SyncListCache", "[]");
 
         // --- TIMERS ---
-        // StartSyncTimer dient nur noch dem initialen Anstoß nach dem Laden
         $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
-
-        // Wir benötigen hier keinen statischen YieldTimer mehr, da wir dynamisch triggern.
     }
 
 
@@ -589,13 +586,10 @@ class RemoteSync extends IPSModule
                     $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
 
                     // 3. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
-                    $lockName = "RS_Lock_" . $this->InstanceID . "_" . $mappingID;
-                    if (IPS_SemaphoreEnter($lockName, 0)) {
-                        // KORREKTUR: Wir triggern den Worker asynchron über RunScriptText
-                        // Dies startet sofort einen neuen PHP-Thread und vermeidet Recursion.
-                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $mappingID . "');";
-                        @IPS_RunScriptText($script);
-                    }
+                    // WICHTIG: AddToBuffer betritt die Semaphore NICHT selbst (vermeidet Warnung in SkriptID 0).
+                    // Wir stoßen nur den asynchronen Worker an, der die Semaphore prüft.
+                    $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $mappingID . "');";
+                    @IPS_RunScriptText($script);
                 }
             }
         }
@@ -698,9 +692,7 @@ class RemoteSync extends IPSModule
 
         $lockName = "RS_Lock_" . $this->InstanceID . "_" . $MappingID;
 
-        // Wir stellen sicher, dass wir die Semaphore halten.
-        // Falls wir über IPS_RunScriptText kommen, müssen wir sie hier erneut prüfen/setzen, 
-        // da IPS_RunScriptText einen neuen Scope startet.
+        // Der Worker-Thread versucht hier als Erstes, die Semaphore zu betreten.
         if (!IPS_SemaphoreEnter($lockName, 0)) {
             return;
         }
@@ -755,13 +747,13 @@ class RemoteSync extends IPSModule
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
         } finally {
-            // Semaphore freigeben
+            // Semaphore UNBEDINGT wieder freigeben
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check: Sind neue Daten für DIESES Set reingekommen während wir gesendet haben?
+            // Yield-Check: Erst NACHDEM wir die Semaphore verlassen haben,
+            // prüfen wir, ob neue Daten reingekommen sind, und stoßen ggf. einen NEUEN Worker an.
             $checkBuffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
             if (isset($checkBuffer[$MappingID]) && count($checkBuffer[$MappingID]) > 0) {
-                // Wir stoßen den nächsten Durchlauf asynchron an
                 $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');";
                 @IPS_RunScriptText($script);
             }
