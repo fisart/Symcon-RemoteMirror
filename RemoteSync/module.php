@@ -1,8 +1,7 @@
-// Version 1.5.1
 <?php
 
 declare(strict_types=1);
-
+// Version 1.5.1
 class RemoteSync extends IPSModule
 {
     const VERSION = '1.5.1';
