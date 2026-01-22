@@ -417,6 +417,21 @@ class RemoteSync extends IPSModule
 
         $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
 
+        // --- PERFORMANCE VARIABLE MAINTENANCE ---
+        foreach ($roots as $root) {
+            if (!isset($root['LocalRootID']) || $root['LocalRootID'] == 0) continue;
+
+            $mappingID = md5(($root['TargetFolder'] ?? '') . $root['LocalRootID']);
+            $rootName = IPS_ObjectExists($root['LocalRootID']) ? IPS_GetName($root['LocalRootID']) : "ID " . $root['LocalRootID'];
+            $caption = $root['TargetFolder'] . " (" . $rootName . ")";
+
+            // 1. RTT Variable
+            $this->MaintainVariable("RTT_" . $mappingID, "RTT: " . $caption, 2, "ms", 0, true);
+
+            // 2. Batch Variable
+            $this->MaintainVariable("Batch_" . $mappingID, "Batch: " . $caption, 1, "Items", 0, true);
+        }
+
         // --- STATUS & INITIALER SYNC ---
         if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
             $this->SetStatus(104);
@@ -771,8 +786,20 @@ class RemoteSync extends IPSModule
 
             if ($receiverID > 0 && $this->rpcClient) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items to " . $firstVar['Folder'], KL_MESSAGE);
+
+                // MEASUREMENT START
+                $startTime = microtime(true);
+
                 $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
-                $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result, KL_MESSAGE);
+
+                // MEASUREMENT END
+                $duration = round((microtime(true) - $startTime) * 1000, 2);
+
+                // UPDATE PERFORMANCE VARIABLES
+                @$this->SetValue($this->GetIDForIdent("RTT_" . $MappingID), $duration);
+                @$this->SetValue($this->GetIDForIdent("Batch_" . $MappingID), count($batch));
+
+                $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
