@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.5.3
+// Version 1.5.5
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.3';
+    const VERSION = '1.5.5';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -39,9 +39,7 @@ class RemoteSync extends IPSModule
         // --- ATTRIBUTES ---
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
-        $this->RegisterAttributeString('_BatchBuffer', '{}');
-        $this->RegisterAttributeString('_EventCounter', '{}');
-        $this->RegisterAttributeString('_FirstEventTimes', '{}');
+        $this->RegisterAttributeString('_SyncState', '{"buffer":{},"events":{},"starts":{}}');
         $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
 
@@ -584,25 +582,30 @@ class RemoteSync extends IPSModule
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
 
                 $mappingID = md5(($item['Folder'] ?? '') . ($item['LocalRootID'] ?? 0));
+                $short = substr($mappingID, 0, 20);
                 $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots']);
 
                 if ($payload) {
-                    // 2. In den segmentierten Puffer schreiben (Deduplizierung)
-                    $buffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
-                    $buffer[$mappingID][$localID] = $payload;
-                    $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
+                    // Unified State Access (Batch, Events, Starts)
+                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    // 3. Update event counter for deflation tracking
-                    $eventCounters = json_decode($this->ReadAttributeString('_EventCounter'), true) ?: [];
-                    $eventCounters[$mappingID] = ($eventCounters[$mappingID] ?? 0) + 1;
-                    $this->WriteAttributeString('_EventCounter', json_encode($eventCounters));
+                    // 1. In den segmentierten Puffer schreiben (Deduplizierung)
+                    $state['buffer'][$mappingID][$localID] = $payload;
 
-                    // 4. Update processing lag start time
-                    $firstEventTimes = json_decode($this->ReadAttributeString('_FirstEventTimes'), true) ?: [];
-                    if (!isset($firstEventTimes[$mappingID]) || $firstEventTimes[$mappingID] == 0) {
-                        $firstEventTimes[$mappingID] = microtime(true);
-                        $this->WriteAttributeString('_FirstEventTimes', json_encode($firstEventTimes));
+                    // 2. Update event counter for deflation tracking
+                    $state['events'][$mappingID] = ($state['events'][$mappingID] ?? 0) + 1;
+
+                    // 3. Update processing lag start time
+                    if (!isset($state['starts'][$mappingID]) || $state['starts'][$mappingID] == 0) {
+                        $state['starts'][$mappingID] = microtime(true);
                     }
+
+                    // Write unified state
+                    $this->WriteAttributeString('_SyncState', json_encode($state));
+
+                    // 4. Update Queue Size Monitoring
+                    $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
+                    if ($qVarID > 0) SetValue($qVarID, count($state['buffer'][$mappingID]));
 
                     $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
 
@@ -718,6 +721,7 @@ class RemoteSync extends IPSModule
             $this->MaintainVariable("E" . $short, "Errors: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("L" . $short, "Lag: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
+            $this->MaintainVariable("Q" . $short, "Queue: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -739,6 +743,7 @@ class RemoteSync extends IPSModule
                 @$this->MaintainVariable("E" . $short, "", 1, "", 0, false);
                 @$this->MaintainVariable("D" . $short, "", 1, "", 0, false);
                 @$this->MaintainVariable("L" . $short, "", 2, "", 0, false);
+                @$this->MaintainVariable("Q" . $short, "", 1, "", 0, false);
             }
         }
         echo "Performance variables deleted.";
@@ -776,21 +781,35 @@ class RemoteSync extends IPSModule
         }
 
         try {
-            $rawBuffer = $this->ReadAttributeString('_BatchBuffer');
-            $fullBuffer = json_decode($rawBuffer, true) ?: [];
+            $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-            if (!isset($fullBuffer[$MappingID]) || count($fullBuffer[$MappingID]) === 0) {
+            if (!isset($state['buffer'][$MappingID]) || count($state['buffer'][$MappingID]) === 0) {
                 return;
             }
 
-            $variables = $fullBuffer[$MappingID];
+            $variables = $state['buffer'][$MappingID];
             $totalItems = count($variables);
 
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch for $MappingID: $totalItems", KL_MESSAGE);
 
-            // Puffer-Segment sofort leeren (Deduplizierung)
-            unset($fullBuffer[$MappingID]);
-            $this->WriteAttributeString('_BatchBuffer', json_encode($fullBuffer));
+            // Puffer-Segment sofort leeren
+            unset($state['buffer'][$MappingID]);
+
+            // Deflation Tracking Snapshot
+            $eventCount = $state['events'][$MappingID] ?? $totalItems;
+            $skipped = max(0, $eventCount - $totalItems);
+            $state['events'][$MappingID] = 0;
+
+            // Processing Lag Snapshot
+            $firstEventTime = $state['starts'][$MappingID] ?? microtime(true);
+            $state['starts'][$MappingID] = 0;
+
+            // Write consolidated state back
+            $this->WriteAttributeString('_SyncState', json_encode($state));
+
+            // Queue Size Monitoring Reset
+            $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
+            if ($qVarID > 0) SetValue($qVarID, 0);
 
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($firstVar['Folder']);
@@ -860,23 +879,10 @@ class RemoteSync extends IPSModule
                 $sizeVarID = @IPS_GetObjectIDByIdent("S" . $short, $this->InstanceID);
                 if ($sizeVarID > 0) SetValue($sizeVarID, $sizeKB);
 
-                // DEFLATION TRACKING
-                $eventCounters = json_decode($this->ReadAttributeString('_EventCounter'), true) ?: [];
-                $eventCount = $eventCounters[$MappingID] ?? $totalItems;
-                $skipped = max(0, $eventCount - $totalItems);
-                $eventCounters[$MappingID] = 0; // Reset for next batch
-                $this->WriteAttributeString('_EventCounter', json_encode($eventCounters));
-
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
-                // PROCESSING LAG TRACKING
-                $firstEventTimes = json_decode($this->ReadAttributeString('_FirstEventTimes'), true) ?: [];
-                $firstEventTime = $firstEventTimes[$MappingID] ?? microtime(true);
                 $lag = round(microtime(true) - $firstEventTime, 2);
-                $firstEventTimes[$MappingID] = 0; // Reset for next cycle
-                $this->WriteAttributeString('_FirstEventTimes', json_encode($firstEventTimes));
-
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
 
@@ -894,8 +900,8 @@ class RemoteSync extends IPSModule
             IPS_SemaphoreLeave($lockName);
 
             // Yield-Check: Sind neue Daten für DIESES Set reingekommen während wir gesendet haben?
-            $checkBuffer = json_decode($this->ReadAttributeString('_BatchBuffer'), true) ?: [];
-            if (isset($checkBuffer[$MappingID]) && count($checkBuffer[$MappingID]) > 0) {
+            $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
+            if (isset($checkState['buffer'][$MappingID]) && count($checkState['buffer'][$MappingID]) > 0) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission for $MappingID. Restarting...", KL_MESSAGE);
                 $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');";
                 @IPS_RunScriptText($script);
