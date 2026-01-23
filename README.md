@@ -1,4 +1,4 @@
-# Dokumentation: RemoteSync (RS) - Hochperformante System-Föderation
+# Hochperformante, bidirektionale Synchronisierung von Variablen-Strukturen zwischen entfernten IP-Symcon Systemen
 
 ## 1. Einführung & Problemstellung
 In komplexen IP-Symcon-Umgebungen mit mehreren Standorten (z. B. Haupthaus, Gartenhaus, Büro) stellt die Synchronisation von Daten eine Herausforderung dar. Klassische Lösungen leiden oft unter:
@@ -113,11 +113,12 @@ Das System garantiert eine strikte Sequenzierung innerhalb eines Sets. Alle Wert
 *   **SEC-Modul:** Keine Speicherung von Passwörtern im Modul.
 *   **Zustandslosigkeit:** Keine persistenten Flags; sauberer Start nach jedem Reboot.
 *   **Verschlüsselung:** TLS-verschlüsseltes HTTPS.
+*   **Referenz-Schutz:** Variablen werden auf dem Zielsystem über das Feld `ObjectInfo` (`RS_REF:Key:ID`) eindeutig identifiziert.
 
 ---
 ---
 
-# Documentation: RemoteSync (RS) - High-Performance System Federation
+# High-Performance, Bidirectional Synchronization of Variable Structures Between Remote IP-Symcon Systems
 
 ## 1. Introduction & Problem Statement
 In complex IP-Symcon environments with multiple locations (e.g., main house, garden house, office), data synchronization is a challenge. Classic solutions often suffer from:
@@ -187,6 +188,7 @@ Real-time sensors can be installed via the "Performance Monitoring" panel:
 *   **SEC Module:** No passwords stored within the module.
 *   **Statelessness:** No persistent flags; clean start after every reboot.
 *   **Encryption:** TLS-encrypted HTTPS.
+*   **Reference Protection:** Variables are uniquely identified on the target system via the `ObjectInfo` field (`RS_REF:Key:ID`).
 
 ---
 **Version:** 1.5.1
