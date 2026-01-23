@@ -1,10 +1,12 @@
 <?php
 
 declare(strict_types=1);
-// Version 1.5.1
+
+// Version 1.5.2
+
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.1';
+    const VERSION = '1.5.2';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -38,6 +40,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeInteger('_RemoteReceiverID', 0);
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         $this->RegisterAttributeString('_BatchBuffer', '{}');
+        $this->RegisterAttributeString('_EventCounter', '{}');
         $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
 
@@ -588,6 +591,11 @@ class RemoteSync extends IPSModule
                     $buffer[$mappingID][$localID] = $payload;
                     $this->WriteAttributeString('_BatchBuffer', json_encode($buffer));
 
+                    // 3. Update event counter for deflation tracking
+                    $eventCounters = json_decode($this->ReadAttributeString('_EventCounter'), true) ?: [];
+                    $eventCounters[$mappingID] = ($eventCounters[$mappingID] ?? 0) + 1;
+                    $this->WriteAttributeString('_EventCounter', json_encode($eventCounters));
+
                     $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
 
                     // --- TRACE LOGIK FÜR ID 25458 ---
@@ -595,7 +603,7 @@ class RemoteSync extends IPSModule
                         $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
                     }
 
-                    // 3. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
+                    // 4. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $mappingID;
 
                     // Asynchroner Worker-Start via RunScriptText (vermeidet Race Conditions in AddToBuffer)
@@ -700,6 +708,7 @@ class RemoteSync extends IPSModule
             $this->MaintainVariable("B" . $short, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("S" . $short, "Size: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $this->MaintainVariable("E" . $short, "Errors: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
+            $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -719,6 +728,7 @@ class RemoteSync extends IPSModule
                 @$this->MaintainVariable("B" . $short, "", 1, "", 0, false);
                 @$this->MaintainVariable("S" . $short, "", 2, "", 0, false);
                 @$this->MaintainVariable("E" . $short, "", 1, "", 0, false);
+                @$this->MaintainVariable("D" . $short, "", 1, "", 0, false);
             }
         }
         echo "Performance variables deleted.";
@@ -768,12 +778,13 @@ class RemoteSync extends IPSModule
 
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch for $MappingID: $totalItems", KL_MESSAGE);
 
-            // Puffer-Segment sofort leeren
+            // Puffer-Segment sofort leeren (Deduplizierung)
             unset($fullBuffer[$MappingID]);
             $this->WriteAttributeString('_BatchBuffer', json_encode($fullBuffer));
 
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($firstVar['Folder']);
+            $localSetID = (int)($firstVar['LocalSetID'] ?? 0);
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $firstVar['Folder'] . " failed.", KL_ERROR);
@@ -838,6 +849,16 @@ class RemoteSync extends IPSModule
 
                 $sizeVarID = @IPS_GetObjectIDByIdent("S" . $short, $this->InstanceID);
                 if ($sizeVarID > 0) SetValue($sizeVarID, $sizeKB);
+
+                // DEFLATION TRACKING
+                $eventCounters = json_decode($this->ReadAttributeString('_EventCounter'), true) ?: [];
+                $eventCount = $eventCounters[$MappingID] ?? $totalItems;
+                $skipped = max(0, $eventCount - $totalItems);
+                $eventCounters[$MappingID] = 0; // Reset for next batch
+                $this->WriteAttributeString('_EventCounter', json_encode($eventCounters));
+
+                $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
+                if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
