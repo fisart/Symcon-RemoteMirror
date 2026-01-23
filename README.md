@@ -1,7 +1,3 @@
-Hier ist die vollständige, kumulative Dokumentation für **Version 1.5.1** in deutscher Sprache, gefolgt von der vollständigen englischen Übersetzung. Alle technischen Details zur Worker-Logik, Effizienz und Parallelität sind enthalten.
-
----
-
 # Dokumentation: RemoteSync (RS) - Hochperformante System-Föderation
 
 ## 1. Einführung & Problemstellung
