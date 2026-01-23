@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.5.7
+// Version 1.5.8
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.7';
+    const VERSION = '1.5.8';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -724,7 +724,7 @@ class RemoteSync extends IPSModule
             $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("L" . $short, "Lag: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $this->MaintainVariable("Q" . $short, "Queue: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
-            $this->MaintainVariable("P" . $short, "Predictive: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
+            $this->MaintainVariable("P" . $short, "Predictive: " . $objectName . " (" . $folder . ")", 2, "s", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -854,7 +854,7 @@ class RemoteSync extends IPSModule
                 $currentState['events'][$MappingID] = 0;
                 $currentState['retries'][$MappingID] = 0; // Reset Toxic Counter on success
 
-                // LAG FIX v1.5.7: Reset start time ONLY on success
+                // LAG FIX v1.5.7/1.5.8: Reset start time ONLY on success
                 $firstEventTime = $currentState['starts'][$MappingID] ?? microtime(true);
                 $currentState['starts'][$MappingID] = 0;
 
@@ -872,7 +872,7 @@ class RemoteSync extends IPSModule
 
                 $lag = round(microtime(true) - $firstEventTime, 2);
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
-                if ($lagVarID > 0 && $lag < 1000000) SetValue($lagVarID, $lag); // Sanity Check
+                if ($lagVarID > 0 && $lag < 1000000) SetValue($lagVarID, $lag);
 
                 // PREDICTIVE ETA
                 $rtt_last = $duration > 0 ? $duration / 1000 : 1;
@@ -890,7 +890,7 @@ class RemoteSync extends IPSModule
             $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
             if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
 
-            // TOXIC PACKET HANDLING v1.5.7
+            // TOXIC PACKET HANDLING
             $errorState = json_decode($this->ReadAttributeString('_SyncState'), true);
             $errorState['retries'][$MappingID] = ($errorState['retries'][$MappingID] ?? 0) + 1;
 
@@ -903,17 +903,16 @@ class RemoteSync extends IPSModule
             }
             $this->WriteAttributeString('_SyncState', json_encode($errorState));
 
-            // BACK-OFF v1.5.7: Small sleep on error to protect network
+            // BACK-OFF
             ips_sleep(2000);
         } finally {
             // Semaphore UNBEDINGT wieder freigeben
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check mit Verzögerung v1.5.7
+            // Yield-Check mit Verzögerung
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
             if (isset($checkState['buffer'][$MappingID]) && count($checkState['buffer'][$MappingID]) > 0) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: DATA PENDING for $MappingID. Restarting in 100ms...", KL_MESSAGE);
-                // 100ms Yield Delay
                 ips_sleep(100);
                 @IPS_RunScriptText("RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');");
             } else {
@@ -950,7 +949,7 @@ class RemoteSync extends IPSModule
         $gwID = (int)$gatewayID;
 
         return "<?php
-/* RemoteSync Receiver Optimized (v1.5.7) */
+/* RemoteSync Receiver Optimized (v1.5.8) */
 
 \$data   = \$_IPS['DATA'] ?? '';
 \$packet = json_decode(\$data, true);
@@ -965,7 +964,7 @@ if (!is_array(\$packet)) return;
 
 if (!is_array(\$batch) || \$rootID == 0) return;
 
-// --- Profile Creation ---
+// --- Profile Creation (Restored GM v1.0) ---
 if (is_array(\$profiles)) {
     foreach (\$profiles as \$pName => \$pDef) {
         if (!is_string(\$pName) || \$pName === '' || IPS_VariableProfileExists(\$pName)) continue;
@@ -982,7 +981,7 @@ if (is_array(\$profiles)) {
     }
 }
 
-// --- Caching Layer v1.5.7 (Variable-based Buffer) ---
+// --- Caching Layer v1.5.7/1.5.8 (Variable-based Buffer) ---
 \$cacheVarID = @IPS_GetObjectIDByIdent('RS_Cache', \$_IPS['SELF']);
 if (\$cacheVarID === false) {
     \$cacheVarID = IPS_CreateVariable(3); // String
@@ -1005,7 +1004,7 @@ foreach (\$batch as \$item) {
         if (isset(\$cache[\$refString]) && IPS_ObjectExists(\$cache[\$refString])) {
             \$remoteID = \$cache[\$refString];
         } else {
-            // 2. PFAD AUFLÖSEN (Slow Path)
+            // 2. PFAD AUFLÖSEN (Restored GM Pfad-Instanz Logik)
             \$path = \$item['Path'] ?? [];
             \$currentParent = \$rootID;
             foreach (\$path as \$index => \$nodeName) {
@@ -1036,10 +1035,39 @@ foreach (\$batch as \$item) {
             if (\$remoteID > 0) \$cache[\$refString] = \$remoteID;
         }
 
-        // 4. LÖSCHEN
+        // 4. LÖSCHEN (Restored GM deleteRecursive Logik)
         if (!empty(\$item['Delete'])) {
             if (\$remoteID > 0) {
-                @IPS_DeleteVariable(\$remoteID);
+                \$parentToCleanup = IPS_GetParent(\$remoteID);
+                \$deleteRecursive = function(\$id) use (&\$deleteRecursive) {
+                    foreach (IPS_GetChildrenIDs(\$id) as \$childID) \$deleteRecursive(\$childID);
+                    \$obj = IPS_GetObject(\$id);
+                    switch (\$obj['ObjectType']) {
+                        case 0: @IPS_DeleteCategory(\$id); break;
+                        case 1: @IPS_DeleteInstance(\$id); break;
+                        case 2: @IPS_DeleteVariable(\$id); break;
+                        case 3: @IPS_DeleteScript(\$id, true); break;
+                    }
+                };
+                \$deleteRecursive(\$remoteID);
+                
+                // Pfad-Bereinigung
+                while (\$parentToCleanup > 0 && \$parentToCleanup != \$rootID) {
+                    if (!IPS_ObjectExists(\$parentToCleanup)) break;
+                    \$children = IPS_GetChildrenIDs(\$parentToCleanup);
+                    if (count(\$children) > 0) break;
+                    \$obj = IPS_GetObject(\$parentToCleanup);
+                    \$nextParent = IPS_GetParent(\$parentToCleanup);
+                    if (\$obj['ObjectType'] == 0) {
+                        @IPS_DeleteCategory(\$parentToCleanup);
+                    } elseif (\$obj['ObjectType'] == 1) {
+                        \$inst = IPS_GetInstance(\$parentToCleanup);
+                        if (isset(\$inst['ModuleInfo']['ModuleID']) && strcasecmp(\$inst['ModuleInfo']['ModuleID'], '{485D0419-BE97-4548-AA9C-C083EB82E61E}') === 0) {
+                            @IPS_DeleteInstance(\$parentToCleanup);
+                        } else { break; }
+                    } else { break; }
+                    \$parentToCleanup = \$nextParent;
+                }
                 unset(\$cache[\$refString]);
             }
             continue;
