@@ -71,7 +71,7 @@
                 { 
                     "type": "RowLayout", 
                     "items": [
-                        { "type": "Button", "caption": "Install Performance Variables", "onClick": "RS_InstallPerformanceVariables($id);" },
+                        { "type": "Button", "caption": "Install Performance Variables", "onClick" : "RS_InstallPerformanceVariables($id);" },
                         { "type": "Button", "caption": "Delete Performance Variables", "onClick": "RS_DeletePerformanceVariables($id);", "confirm": "Are you sure you want to delete all performance sensors?" }
                     ]
                 }
