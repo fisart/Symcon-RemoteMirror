@@ -28,9 +28,24 @@
             "Sync NONE": "Keine Sync",
             "Action ALL": "Alle Aktion",
             "Action NONE": "Keine Aktion",
+            "Del ALL": "Alle löschen",
+            "Del NONE": "Keine löschen",
             "💾 SAVE ALL": "💾 ALLES SPEICHERN",
             "INSTALL REMOTE": "REMOTE INSTALLIEREN",
             "Force Refresh UI": "UI Aktualisieren",
+
+            "Performance Monitoring": "Performance-Überwachung",
+            "Create or remove variables to track latency and batch sizes.": "Erstellen oder entfernen Sie Variablen zur Überwachung von Latenz und Paketgrößen.",
+            "Install Performance Variables": "Performance-Variablen installieren",
+            "Delete Performance Variables": "Performance-Variablen löschen",
+            "Are you sure you want to delete all performance sensors?": "Sind Sie sicher, dass Sie alle Performance-Sensoren löschen möchten?",
+
+            "Backup & Migration": "Sicherung & Migration",
+            "Use the field below to copy an export or paste an import string.": "Nutzen Sie das Feld unten, um einen Export zu kopieren oder einen Import-String einzufügen.",
+            "JSON Configuration Data": "JSON-Konfigurationsdaten",
+            "Generate Export": "Export generieren",
+            "Execute Import": "Import ausführen",
+            "This will overwrite all current settings. Proceed?": "Dies wird alle aktuellen Einstellungen überschreiben. Fortfahren?",
 
             "ID": "ID",
             "Variable Name": "Variablen-Name",
@@ -50,26 +65,45 @@
             "Replicate Variable Profiles (local → remote)": "Replicate Variable Profiles (local → remote)",
             "Local Secrets Module": "Local Secrets Module",
             "Local Server Key (Used by Remote for Actions)": "Local Server Key (Used by Remote for Actions)",
+
             "Step 1: Define Remote Targets (Folders) & Connection": "Step 1: Define Remote Targets (Folders) & Connection",
             "Remote Targets": "Remote Targets",
             "Folder Name": "Folder Name",
             "Remote Server Key": "Remote Server Key",
             "Remote Script Root ID": "Remote Script Root ID",
             "Remote SEC ID": "Remote SEC ID",
+
             "Step 2: Map Local Roots to Folders": "Step 2: Map Local Roots to Folders",
             "Local Source Roots": "Local Source Roots",
             "Local Object (Source)": "Local Object (Source)",
             "Assign to Folder": "Assign to Folder",
             "Remote Root ID": "Remote Root ID",
+
             "Step 3: Individual Selection per Target": "Step 3: Individual Selection per Target",
+
             "Batch Tools:": "Batch Tools:",
             "Sync ALL": "Sync ALL",
             "Sync NONE": "Sync NONE",
             "Action ALL": "Action ALL",
             "Action NONE": "Action NONE",
+            "Del ALL": "Del ALL",
+            "Del NONE": "Del NONE",
             "💾 SAVE ALL": "💾 SAVE ALL",
             "INSTALL REMOTE": "INSTALL REMOTE",
-            "Force Refresh UI": "Force Refresh UI"
+            "Force Refresh UI": "Force Refresh UI",
+
+            "Performance Monitoring": "Performance Monitoring",
+            "Create or remove variables to track latency and batch sizes.": "Create or remove variables to track latency and batch sizes.",
+            "Install Performance Variables": "Install Performance Variables",
+            "Delete Performance Variables": "Delete Performance Variables",
+            "Are you sure you want to delete all performance sensors?": "Are you sure you want to delete all performance sensors?",
+
+            "Backup & Migration": "Backup & Migration",
+            "Use the field below to copy an export or paste an import string.": "Use the field below to copy an export or paste an import string.",
+            "JSON Configuration Data": "JSON Configuration Data",
+            "Generate Export": "Generate Export",
+            "Execute Import": "Execute Import",
+            "This will overwrite all current settings. Proceed?": "This will overwrite all current settings. Proceed?"
         }
     }
 }
