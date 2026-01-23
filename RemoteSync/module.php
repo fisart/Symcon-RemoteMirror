@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.5.6
+// Version 1.5.7
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.6';
+    const VERSION = '1.5.7';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -934,7 +934,7 @@ class RemoteSync extends IPSModule
         $gwID = (int)$gatewayID;
 
         return "<?php
-/* RemoteSync Receiver Optimized (v1.5.6) */
+/* RemoteSync Receiver Optimized (v1.5.7) */
 
 \$data   = \$_IPS['DATA'] ?? '';
 \$packet = json_decode(\$data, true);
@@ -966,8 +966,16 @@ if (is_array(\$profiles)) {
     }
 }
 
-// --- Caching Layer (v1.5.6) ---
-\$cache = json_decode(IPS_GetBuffer(\$_IPS['SELF']), true) ?: [];
+// --- Caching Layer v1.5.7 (Variable-based Buffer) ---
+\$cacheVarID = @IPS_GetObjectIDByIdent('RS_Cache', \$_IPS['SELF']);
+if (\$cacheVarID === false) {
+    \$cacheVarID = IPS_CreateVariable(3); // String
+    IPS_SetParent(\$cacheVarID, \$_IPS['SELF']);
+    IPS_SetName(\$cacheVarID, 'Lookup Cache');
+    IPS_SetIdent(\$cacheVarID, 'RS_Cache');
+    IPS_SetHidden(\$cacheVarID, true);
+}
+\$cache = json_decode(GetValue(\$cacheVarID), true) ?: [];
 
 foreach (\$batch as \$item) {
     \$localID   = \$item['LocalID'];
@@ -1045,8 +1053,8 @@ foreach (\$batch as \$item) {
     }
 }
 
-// Save Cache back to script buffer
-IPS_SetBuffer(\$_IPS['SELF'], json_encode(\$cache));
+// Save Cache back to variable
+SetValue(\$cacheVarID, json_encode(\$cache));
 ?>";
     }
 
