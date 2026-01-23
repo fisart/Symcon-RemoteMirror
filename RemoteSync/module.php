@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.5.2
+// Version 1.5.3
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.2';
+    const VERSION = '1.5.3';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -41,6 +41,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeInteger('_RemoteGatewayID', 0);
         $this->RegisterAttributeString('_BatchBuffer', '{}');
         $this->RegisterAttributeString('_EventCounter', '{}');
+        $this->RegisterAttributeString('_FirstEventTimes', '{}');
         $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
 
@@ -596,6 +597,13 @@ class RemoteSync extends IPSModule
                     $eventCounters[$mappingID] = ($eventCounters[$mappingID] ?? 0) + 1;
                     $this->WriteAttributeString('_EventCounter', json_encode($eventCounters));
 
+                    // 4. Update processing lag start time
+                    $firstEventTimes = json_decode($this->ReadAttributeString('_FirstEventTimes'), true) ?: [];
+                    if (!isset($firstEventTimes[$mappingID]) || $firstEventTimes[$mappingID] == 0) {
+                        $firstEventTimes[$mappingID] = microtime(true);
+                        $this->WriteAttributeString('_FirstEventTimes', json_encode($firstEventTimes));
+                    }
+
                     $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
 
                     // --- TRACE LOGIK FÜR ID 25458 ---
@@ -603,7 +611,7 @@ class RemoteSync extends IPSModule
                         $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
                     }
 
-                    // 4. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
+                    // 5. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $mappingID;
 
                     // Asynchroner Worker-Start via RunScriptText (vermeidet Race Conditions in AddToBuffer)
@@ -709,6 +717,7 @@ class RemoteSync extends IPSModule
             $this->MaintainVariable("S" . $short, "Size: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $this->MaintainVariable("E" . $short, "Errors: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
+            $this->MaintainVariable("L" . $short, "Lag: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
@@ -729,6 +738,7 @@ class RemoteSync extends IPSModule
                 @$this->MaintainVariable("S" . $short, "", 2, "", 0, false);
                 @$this->MaintainVariable("E" . $short, "", 1, "", 0, false);
                 @$this->MaintainVariable("D" . $short, "", 1, "", 0, false);
+                @$this->MaintainVariable("L" . $short, "", 2, "", 0, false);
             }
         }
         echo "Performance variables deleted.";
@@ -860,6 +870,17 @@ class RemoteSync extends IPSModule
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
+                // PROCESSING LAG TRACKING
+                $firstEventTimes = json_decode($this->ReadAttributeString('_FirstEventTimes'), true) ?: [];
+                $firstEventTime = $firstEventTimes[$MappingID] ?? microtime(true);
+                $lag = round(microtime(true) - $firstEventTime, 2);
+                $firstEventTimes[$MappingID] = 0; // Reset for next cycle
+                $this->WriteAttributeString('_FirstEventTimes', json_encode($firstEventTimes));
+
+                $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
+                if ($lagVarID > 0) SetValue($lagVarID, $lag);
+
+                $this->Log("[PERF-DEBUG] Mapping: $MappingID, IdentShort: $short, Time: $duration ms, Lag: $lag s", KL_MESSAGE);
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
