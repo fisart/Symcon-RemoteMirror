@@ -7,6 +7,13 @@
                 { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode (Verbose Log)" },
                 { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
                 { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
+                { 
+                    "type": "NumberSpinner", 
+                    "name": "MaxBatchSize", 
+                    "caption": "Maximum Batch Size (Variables per Packet)",
+                    "minimum": 1,
+                    "maximum": 1000
+                },
                 {
                     "type": "SelectInstance",
                     "name": "LocalPasswordModuleID",
@@ -71,7 +78,7 @@
                 { 
                     "type": "RowLayout", 
                     "items": [
-                        { "type": "Button", "caption": "Install Performance Variables", "onClick": "RS_InstallPerformanceVariables($id);" },
+                        { "type": "Button", "caption": "Install Performance Variables", "onClick" : "RS_InstallPerformanceVariables($id);" },
                         { "type": "Button", "caption": "Delete Performance Variables", "onClick": "RS_DeletePerformanceVariables($id);", "confirm": "Are you sure you want to delete all performance sensors?" }
                     ]
                 }
