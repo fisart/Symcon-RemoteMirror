@@ -513,7 +513,7 @@ class RemoteSync extends IPSModule
                 if ($this->IsChildOf($localID, (int)$root['LocalRootID'])) {
                     $localRootID = (int)$root['LocalRootID'];
                     $remoteRootID = (int)$root['RemoteRootID'];
-                    foundMapping = true;
+                    $foundMapping = true;
                     break;
                 }
             }
