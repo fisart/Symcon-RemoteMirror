@@ -724,7 +724,7 @@ class RemoteSync extends IPSModule
             $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
             $this->MaintainVariable("L" . $short, "Lag: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $this->MaintainVariable("Q" . $short, "Queue: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
-            $this->MaintainVariable("P" . $short, "Predictive: " . $objectName . " (" . $folder . ")", 2, "s", 0, true);
+            $this->MaintainVariable("P" . $short, "Predictive: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
             $count++;
         }
         echo "Successfully installed performance variables for $count sets.";
