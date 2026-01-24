@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.0
+// Version 1.6.1
 
 class RemoteSync extends IPSModule
 {
@@ -44,7 +44,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString("SyncListCache", "[]");
 
         // --- TIMERS ---
-        // StartSyncTimer dient dem initialen Anstoß nach ApplyChanges
+
 
     }
 
@@ -347,9 +347,6 @@ class RemoteSync extends IPSModule
         $this->rpcClient = null;
         $this->config = [];
 
-        // 1. Timer initial stoppen
-        //$this->SetTimerInterval('StartSyncTimer', 0);
-
         // --- NACHRICHTEN-CLEANUP ---
         $messages = $this->GetMessageList();
         foreach ($messages as $senderID => $messageID) {
@@ -499,7 +496,6 @@ class RemoteSync extends IPSModule
 
     public function ProcessSync()
     {
-        $this->SetTimerInterval('StartSyncTimer', 0);
         if (!$this->LoadConfig()) return;
 
         // --- SONDE 4: Roots-Konfiguration prüfen ---
