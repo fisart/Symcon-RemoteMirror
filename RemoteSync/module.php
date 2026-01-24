@@ -664,7 +664,9 @@ class RemoteSync extends IPSModule
 
                     // 5. Worker-Start
                     $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
-                    @IPS_RunScriptText($script);
+                    if (!IPS_RunScriptText($script)) {
+                        $this->Log("Critical Error: Worker thread for server '$folderName' could not be started. System might be overloaded.", KL_ERROR);
+                    }
                 }
             }
         }
@@ -912,7 +914,9 @@ class RemoteSync extends IPSModule
             if ($receiverID > 0 && $this->rpcClient) {
 
                 $startTime = microtime(true);
-                $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
+                // Der Aufruf erfolgt nun ohne Unterdrückung. 
+                // Fehler werden durch den catch-Block weiter unten sauber abgefangen und geloggt.
+                $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
                 // Performance Updates
@@ -1281,7 +1285,9 @@ class RemoteSync_RPCClient
         $payload = json_encode(['jsonrpc' => '2.0', 'method' => $method, 'params' => $params, 'id' => time()]);
         $opts = ['http' => ['method' => 'POST', 'header' => 'Content-Type: application/json', 'content' => $payload, 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
         $context = stream_context_create($opts);
-        $result = @file_get_contents($this->url, false, $context);
+        $result = file_get_contents($this->url, false, $context);
+        // Die Prüfung 'if ($result === false)' existiert bereits im Code 
+        // und wirft nun eine Exception mit der originalen PHP-Fehlermeldung.
         if ($result === false) throw new Exception("Connection failed");
         $response = json_decode($result, true);
         if (isset($response['error'])) throw new Exception($response['error']['message']);
