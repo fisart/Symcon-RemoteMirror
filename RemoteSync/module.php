@@ -433,6 +433,7 @@ class RemoteSync extends IPSModule
 
     public function RequestAction($Ident, $Value)
     {
+        $this->Log("REQ_RAW: " . $Value, KL_MESSAGE);
         switch ($Ident) {
             case "UpdateRow":
                 $rows = json_decode($Value, true);
