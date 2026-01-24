@@ -605,47 +605,45 @@ class RemoteSync extends IPSModule
         foreach ($this->config['SyncList'] as $item) {
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
 
-                $mappingID = md5(($item['Folder'] ?? '') . ($item['LocalRootID'] ?? 0));
-                $short = substr($mappingID, 0, 20);
+                // --- ÄNDERUNG: Gruppierung nach Folder (Server) statt nach Mapping ---
+                $folderName = $item['Folder'] ?? 'Unknown';
+
+                // Für das Performance Monitoring (Ident-konform) nutzen wir weiterhin einen Hash,
+                // aber nun basierend auf dem Folder Namen.
+                $folderHash = md5($folderName);
+                $short = substr($folderHash, 0, 20);
+
                 $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots']);
 
                 if ($payload) {
-                    if ($localID == 37889) {
-                        $this->Log("TRACEDELETE: Variable 37889 checked. Delete-Flag in Payload is: " . ($payload['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
-                    }
                     // Unified State Access (Batch, Events, Starts)
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    // 1. In den segmentierten Puffer schreiben (Deduplizierung)
-                    $state['buffer'][$mappingID][$localID] = $payload;
+                    // 1. In den segmentierten Puffer schreiben (Key ist jetzt der FolderName)
+                    // Deduplizierung greift hier pro Server: Die letzte Änderung gewinnt.
+                    $state['buffer'][$folderName][$localID] = $payload;
 
-                    // 2. Update event counter for deflation tracking
-                    $state['events'][$mappingID] = ($state['events'][$mappingID] ?? 0) + 1;
+                    // 2. Update event counter für Deflation Tracking (pro Server)
+                    $state['events'][$folderName] = ($state['events'][$folderName] ?? 0) + 1;
 
-                    // 3. Update processing lag start time
-                    if (!isset($state['starts'][$mappingID]) || $state['starts'][$mappingID] == 0) {
-                        $state['starts'][$mappingID] = microtime(true);
+                    // 3. Update processing lag start time (pro Server)
+                    if (!isset($state['starts'][$folderName]) || $state['starts'][$folderName] == 0) {
+                        $state['starts'][$folderName] = microtime(true);
                     }
 
-                    // Write unified state
+                    // Status zurückschreiben
                     $this->WriteAttributeString('_SyncState', json_encode($state));
 
-                    // 4. Update Queue Size Monitoring
+                    // 4. Update Queue Size Monitoring (jetzt pro Server)
                     $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-                    if ($qVarID > 0) SetValue($qVarID, count($state['buffer'][$mappingID]));
+                    if ($qVarID > 0) SetValue($qVarID, count($state['buffer'][$folderName]));
 
-                    $this->Log("[BUFFER-CHECK] AddToBuffer: Single item $localID added.", KL_MESSAGE);
-
-                    // --- TRACE LOGIK FÜR ID 25458 ---
-                    if ($localID == 25458) {
-                        $this->Log("[TRACE-25458] AddToBuffer: Variable successfully written to Attribute Puffer.", KL_NOTIFY);
+                    if ($this->ReadPropertyBoolean('DebugMode')) {
+                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Server Bucket '$folderName'.", KL_MESSAGE);
                     }
 
-                    // 5. Worker-Check: Versuchen die Semaphore für dieses Set zu bekommen
-                    $lockName = "RS_Lock_" . $this->InstanceID . "_" . $mappingID;
-
-                    // Asynchroner Worker-Start via RunScriptText (vermeidet Race Conditions in AddToBuffer)
-                    $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $mappingID . "');";
+                    // 5. Worker-Start: Wir übergeben nun den FolderName an den Worker
+                    $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
                     @IPS_RunScriptText($script);
                 }
             }
@@ -729,41 +727,42 @@ class RemoteSync extends IPSModule
 
     public function InstallPerformanceVariables()
     {
-        $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
+        // -- ÄNDERUNG: Wir nutzen jetzt die Targets (Server) statt der Roots (Mappings) --
+        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?: [];
         $count = 0;
-        foreach ($roots as $root) {
-            $localID = (int)($root['LocalRootID'] ?? 0);
-            if ($localID === 0) continue;
 
-            $objectName = IPS_ObjectExists($localID) ? IPS_GetName($localID) : "ID " . $localID;
-            $folder = $root['TargetFolder'] ?? 'Unknown';
+        foreach ($targets as $target) {
+            $folderName = $target['Name'] ?? '';
+            if ($folderName === '') continue;
 
-            // Eindeutiger Ident basierend auf dem Kurz-Hash des Sets (max 32 Chars)
-            $mappingID = md5($folder . $localID);
-            $short = substr($mappingID, 0, 20);
+            // -- ÄNDERUNG: Hash wird jetzt nur aus dem Folder Namen gebildet --
+            $folderHash = md5($folderName);
+            $short = substr($folderHash, 0, 20);
 
-            $this->MaintainVariable("R" . $short, "RTT: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
-            $this->MaintainVariable("B" . $short, "Batch: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
-            $this->MaintainVariable("S" . $short, "Size: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
-            $this->MaintainVariable("E" . $short, "Errors: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
-            $this->MaintainVariable("D" . $short, "Skipped: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
-            $this->MaintainVariable("L" . $short, "Lag: " . $objectName . " (" . $folder . ")", 2, "", 0, true);
-            $this->MaintainVariable("Q" . $short, "Queue: " . $objectName . " (" . $folder . ")", 1, "", 0, true);
+            // -- ÄNDERUNG: Caption angepasst auf den Server-Namen --
+            $this->MaintainVariable("R" . $short, "RTT: " . $folderName, 2, "", 0, true);
+            $this->MaintainVariable("B" . $short, "Batch: " . $folderName, 1, "", 0, true);
+            $this->MaintainVariable("S" . $short, "Size: " . $folderName, 2, "", 0, true);
+            $this->MaintainVariable("E" . $short, "Errors: " . $folderName, 1, "", 0, true);
+            $this->MaintainVariable("D" . $short, "Skipped: " . $folderName, 1, "", 0, true);
+            $this->MaintainVariable("L" . $short, "Lag: " . $folderName, 2, "", 0, true);
+            $this->MaintainVariable("Q" . $short, "Queue: " . $folderName, 1, "", 0, true);
             $count++;
         }
-        echo "Successfully installed performance variables for $count sets.";
+        echo "Successfully installed performance variables for $count servers.";
     }
 
     public function DeletePerformanceVariables()
     {
-        // Wir scannen alle Mappings, um die entsprechenden Variablen gezielt zu löschen
-        $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
-        foreach ($roots as $root) {
-            $localID = (int)($root['LocalRootID'] ?? 0);
-            $folder = $root['TargetFolder'] ?? 'Unknown';
-            if ($localID > 0) {
-                $mappingID = md5($folder . $localID);
-                $short = substr($mappingID, 0, 20);
+        // -- ÄNDERUNG: Wir scannen nun die Targets --
+        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?: [];
+        foreach ($targets as $target) {
+            $folderName = $target['Name'] ?? '';
+            if ($folderName !== '') {
+                $folderHash = md5($folderName);
+                $short = substr($folderHash, 0, 20);
+
+                // Löschen durch setzen des letzten Parameters auf 'false'
                 @$this->MaintainVariable("R" . $short, "", 2, "", 0, false);
                 @$this->MaintainVariable("B" . $short, "", 1, "", 0, false);
                 @$this->MaintainVariable("S" . $short, "", 2, "", 0, false);
@@ -790,51 +789,55 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function FlushBuffer(string $MappingID = "")
+    public function FlushBuffer(string $FolderName = "")
     {
-        $this->Log("!!! SEMAPHORE-CHECK: Ich bin in FlushBuffer gelandet für Set $MappingID !!!", KL_MESSAGE);
+        // Wir behalten dein Log-Format bei
+        $this->Log("!!! SEMAPHORE-CHECK: Ich bin in FlushBuffer gelandet für Server-Bucket: $FolderName !!!", KL_MESSAGE);
 
-        if ($MappingID === "" || IPS_GetKernelRunlevel() !== KR_READY) {
+        if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
-        $lockName = "RS_Lock_" . $this->InstanceID . "_" . $MappingID;
-        $short = substr($MappingID, 0, 20);
+        // Ident-konformer Hash für die Semaphore und Performance-Variablen basierend auf dem Server (Folder)
+        $folderHash = md5($FolderName);
+        $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash;
+        $short = substr($folderHash, 0, 20);
 
-        // Der Worker-Thread versucht hier als Erstes, die Semaphore zu betreten.
+        // Semaphore-Einstieg (jetzt pro Server)
         if (!IPS_SemaphoreEnter($lockName, 0)) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy) for Set $MappingID", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy) for Server $FolderName", KL_MESSAGE);
             return;
         }
 
         try {
             $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-            if (!isset($state['buffer'][$MappingID]) || count($state['buffer'][$MappingID]) === 0) {
+            if (!isset($state['buffer'][$FolderName]) || count($state['buffer'][$FolderName]) === 0) {
+                IPS_SemaphoreLeave($lockName);
                 return;
             }
 
-            $variables = $state['buffer'][$MappingID];
+            $variables = $state['buffer'][$FolderName];
             $totalItems = count($variables);
 
-            // --- SONDE 3: Sendevorgang prüfen ---
+            // --- DEIN TRACE-LOG FÜR 37889 (BEIBEHALTEN) ---
             if (isset($variables[37889])) {
-                $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Set $MappingID. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
+                $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Server $FolderName. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
             }
 
-            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch for $MappingID: $totalItems", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this server-batch for $FolderName: $totalItems", KL_MESSAGE);
 
-            // Puffer-Segment sofort leeren
-            unset($state['buffer'][$MappingID]);
+            // Puffer-Segment leeren
+            unset($state['buffer'][$FolderName]);
 
             // Deflation Tracking Snapshot
-            $eventCount = $state['events'][$MappingID] ?? $totalItems;
+            $eventCount = $state['events'][$FolderName] ?? $totalItems;
             $skipped = max(0, $eventCount - $totalItems);
-            $state['events'][$MappingID] = 0;
+            $state['events'][$FolderName] = 0;
 
             // Processing Lag Snapshot
-            $firstEventTime = $state['starts'][$MappingID] ?? microtime(true);
-            $state['starts'][$MappingID] = 0;
+            $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
+            $state['starts'][$FolderName] = 0;
 
             // Write consolidated state back
             $this->WriteAttributeString('_SyncState', json_encode($state));
@@ -843,16 +846,16 @@ class RemoteSync extends IPSModule
             $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
             if ($qVarID > 0) SetValue($qVarID, 0);
 
+            // Config-Abruf für den Server
             $firstVar = reset($variables);
-            $target = $this->GetTargetConfig($firstVar['Folder']);
-            $localSetID = (int)($firstVar['LocalSetID'] ?? 0);
+            $target = $this->GetTargetConfig($FolderName);
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $firstVar['Folder'] . " failed.", KL_ERROR);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $FolderName . " failed.", KL_ERROR);
                 return;
             }
 
-            // --- TRACE LOGIK FÜR ID 25458 ---
+            // --- DEIN TRACE-LOG FÜR 25458 (BEIBEHALTEN) ---
             if (isset($variables[25458])) {
                 $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
             }
@@ -869,8 +872,8 @@ class RemoteSync extends IPSModule
                 }
             }
 
+            // --- NEUE PAKETSTRUKTUR (Wegfall TargetID im Header) ---
             $packet = [
-                'TargetID'   => (int)$firstVar['RemoteRootID'],
                 'Batch'      => $batch,
                 'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
                 'Profiles'   => $profiles
@@ -878,30 +881,23 @@ class RemoteSync extends IPSModule
 
             $jsonPacket = json_encode($packet);
 
-            // --- JSON VALIDIERUNG ---
             if ($jsonPacket === false) {
                 $errorMsg = json_last_error_msg();
                 $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed. Error: " . $errorMsg, KL_ERROR);
                 return;
             }
 
-            // VOLUMETRIC MEASUREMENT
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-
             $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
             if ($receiverID > 0 && $this->rpcClient) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items (" . $sizeKB . " KB) to " . $firstVar['Folder'], KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items (" . $sizeKB . " KB) to server " . $FolderName, KL_MESSAGE);
 
-                // TEMPORAL MEASUREMENT START
                 $startTime = microtime(true);
-
                 $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
-
-                // TEMPORAL MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // UPDATE PERFORMANCE VARIABLES
+                // --- DEINE PERFORMANCE-UPDATES (EXPLIZIT BEIBEHALTEN) ---
                 $rttVarID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
                 if ($rttVarID > 0) SetValue($rttVarID, $duration);
 
@@ -918,27 +914,24 @@ class RemoteSync extends IPSModule
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
 
-                $this->Log("[PERF-DEBUG] Mapping: $MappingID, IdentShort: $short, Time: $duration ms, Lag: $lag s", KL_MESSAGE);
+                $this->Log("[PERF-DEBUG] Server: $FolderName, IdentShort: $short, Time: $duration ms, Lag: $lag s", KL_MESSAGE);
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
-
-            // ERROR COUNTER MEASUREMENT
             $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
             if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
         } finally {
-            // Semaphore UNBEDINGT wieder freigeben
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check: Sind neue Daten für DIESES Set reingekommen während wir gesendet haben?
+            // Yield-Check (jetzt pro Server)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
-            if (isset($checkState['buffer'][$MappingID]) && count($checkState['buffer'][$MappingID]) > 0) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission for $MappingID. Restarting...", KL_MESSAGE);
-                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');";
+            if (isset($checkState['buffer'][$FolderName]) && count($checkState['buffer'][$FolderName]) > 0) {
+                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission for Server $FolderName. Restarting...", KL_MESSAGE);
+                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "');";
                 @IPS_RunScriptText($script);
             } else {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED for $MappingID. No more data pending.", KL_MESSAGE);
+                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED for $FolderName. No more data pending.", KL_MESSAGE);
             }
         }
     }
@@ -963,12 +956,13 @@ class RemoteSync extends IPSModule
 if (!is_array(\$packet)) return;
 
 \$batch      = \$packet['Batch'] ?? [];
-\$rootID     = \$packet['TargetID'] ?? 0;
+// -- ÄNDERUNG: rootID wird nicht mehr global aus dem Packet-Header gelesen --
 \$autoCreate = !empty(\$packet['AutoCreate']); 
 \$gatewayID  = $gwID;
 \$profiles   = \$packet['Profiles'] ?? [];
 
-if (!is_array(\$batch) || \$rootID == 0) return;
+// -- ÄNDERUNG: Validierung ohne rootID Prüfung --
+if (!is_array(\$batch)) return;
 
 // --- Profile Creation (unverändert) ---
 if (is_array(\$profiles)) {
@@ -988,6 +982,10 @@ if (is_array(\$profiles)) {
 }
 
 foreach (\$batch as \$item) {
+    // -- ÄNDERUNG: rootID wird nun für jedes Item individuell gesetzt --
+    \$rootID    = \$item['RemoteRootID'] ?? 0;
+    if (\$rootID <= 0) continue;
+    
     \$localID   = \$item['LocalID'];
     
     try {
