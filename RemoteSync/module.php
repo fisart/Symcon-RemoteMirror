@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.4
+// Version 1.6.7
 
 class RemoteSync extends IPSModule
 {
