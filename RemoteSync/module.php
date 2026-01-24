@@ -518,6 +518,9 @@ class RemoteSync extends IPSModule
         $remoteRootID = 0;
 
         foreach ($roots as $root) {
+            if ($localID == 37889) {
+                $this->Log("CHECKMAPPING: Testing Var 37889 against Root " . $root['LocalRootID'] . " for Folder " . $root['TargetFolder'], KL_MESSAGE);
+            }
             if (($root['TargetFolder'] ?? '') === $folderName) {
                 if ($this->IsChildOf($localID, (int)$root['LocalRootID'])) {
                     $localRootID = (int)$root['LocalRootID'];
