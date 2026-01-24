@@ -45,7 +45,7 @@ class RemoteSync extends IPSModule
 
         // --- TIMERS ---
         // StartSyncTimer dient dem initialen Anstoß nach ApplyChanges
-        $this->RegisterTimer('StartSyncTimer', 0, 'RS_ProcessSync($_IPS[\'TARGET\']);');
+
     }
 
 
@@ -196,7 +196,6 @@ class RemoteSync extends IPSModule
     public function Destroy()
     {
         // Alle Timer sicher stoppen
-        @$this->SetTimerInterval('StartSyncTimer', 0);
 
         parent::Destroy();
     }
@@ -435,7 +434,7 @@ class RemoteSync extends IPSModule
         } else {
             $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
-                $this->SetTimerInterval('StartSyncTimer', 500);
+                @IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");");
             }
         }
     }
