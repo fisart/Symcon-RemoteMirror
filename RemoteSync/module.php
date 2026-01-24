@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.7
+// Version 1.6.6
 
 class RemoteSync extends IPSModule
 {
@@ -29,6 +29,9 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
         $this->RegisterPropertyString('LocalServerKey', '');
 
+        // Diese Property dient nur noch als persistente Hülle für die Sync-Liste
+        $this->RegisterPropertyString('SyncList', '[]');
+
         // --- MANAGER PROPERTIES ---
         $this->RegisterPropertyString("Targets", "[]");
         $this->RegisterPropertyString("Roots", "[]");
@@ -54,6 +57,10 @@ class RemoteSync extends IPSModule
     // --- FORM & UI ---
     public function GetConfigurationForm()
     {
+        // Sicherstellen, dass der RAM-Arbeitsspeicher (Blueprint) beim Start gefüllt ist
+        if ($this->ReadAttributeString("SyncListCache") === "[]") {
+            $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
+        }
 
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
 
@@ -365,7 +372,11 @@ class RemoteSync extends IPSModule
 
         // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
-        // Wir arbeiten ab jetzt direkt mit dem Rohwert aus dem Attribut.
+
+        if ($syncListRaw === "" || $syncListRaw === "[]") {
+            $syncListRaw = $this->ReadPropertyString("SyncList");
+            $this->WriteAttributeString("SyncListCache", $syncListRaw);
+        }
 
         $syncList = json_decode($syncListRaw, true) ?: [];
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
@@ -481,11 +492,14 @@ class RemoteSync extends IPSModule
 
     public function SaveSelections()
     {
-        // Wir triggern die interne ApplyChanges, um MessageSink zu aktualisieren.
-        // Das Attribut wurde bereits live via RequestAction (UpdateRow) gespeichert.
-        $this->ApplyChanges();
+        // Wir setzen die Property permanent auf leer, da wir nun nur noch 
+        // mit dem Attribut SyncListCache arbeiten.
+        IPS_SetProperty($this->InstanceID, "SyncList", "[]");
 
-        echo "Selection saved and MessageSink updated.";
+        // Triggert ApplyChanges, was die neue Bereinigungs-Logik ausführt
+        IPS_ApplyChanges($this->InstanceID);
+
+        echo "Selection saved and configuration cleaned.";
     }
 
 
