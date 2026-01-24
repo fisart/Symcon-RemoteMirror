@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.6
+// Version 1.6.4
 
 class RemoteSync extends IPSModule
 {
@@ -303,15 +303,13 @@ class RemoteSync extends IPSModule
         $remoteSecID = (int)$target['RemoteSecretsID'];
 
         try {
-            // ÄNDERUNG: Wir nutzen jetzt Idents statt Klarnamen
-            $gwID = $this->FindRemoteScript($scriptRoot, "RS_Gateway");
+            $gwID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Gateway");
             $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
 
             $gwCode = $this->GenerateGatewayCode($remoteSecID);
             $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
-            // ÄNDERUNG: Wir nutzen jetzt Idents statt Klarnamen
-            $rxID = $this->FindRemoteScript($scriptRoot, "RS_Receiver");
+            $rxID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Receiver");
             $this->SendDebug("RS_Install", "Receiver Script located/created at ID: " . $rxID, 0);
 
             $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
@@ -325,26 +323,28 @@ class RemoteSync extends IPSModule
     }
 
 
-    private function FindRemoteScript(int $parentID, string $ident): int
+    private function FindRemoteScript(int $parentID, string $name): int
     {
         try {
-            // Wir suchen direkt über den Ident (Best Practice #3)
-            $id = @$this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
-            if ($id > 0) {
-                return $id;
+            // 1. Suche nach existierendem Skript
+            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
+            if (is_array($children)) {
+                foreach ($children as $cID) {
+                    $obj = $this->rpcClient->IPS_GetObject($cID);
+                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) {
+                        return $cID;
+                    }
+                }
             }
 
-            // Falls nicht gefunden, erstellen
+            // 2. Erstellung, falls nicht gefunden
             $id = $this->rpcClient->IPS_CreateScript(0);
             $this->rpcClient->IPS_SetParent($id, $parentID);
-            $this->rpcClient->IPS_SetIdent($id, $ident);
-
-            // Den Namen setzen wir nur zur Anzeige für den Benutzer (optional)
-            $this->rpcClient->IPS_SetName($id, str_replace("_", " ", $ident));
+            $this->rpcClient->IPS_SetName($id, $name);
 
             return $id;
         } catch (Exception $e) {
-            // Fehler wird hier nicht unterdrückt, sondern ist Teil des Install-Flows
+            $this->Log("RPC Error in FindRemoteScript: " . $e->getMessage(), KL_MESSAGE);
             return 0;
         }
     }
@@ -974,10 +974,12 @@ class RemoteSync extends IPSModule
 if (!is_array(\$packet)) return;
 
 \$batch      = \$packet['Batch'] ?? [];
+// -- ÄNDERUNG: rootID wird nicht mehr global aus dem Packet-Header gelesen --
 \$autoCreate = !empty(\$packet['AutoCreate']); 
 \$gatewayID  = $gwID;
 \$profiles   = \$packet['Profiles'] ?? [];
 
+// -- ÄNDERUNG: Validierung ohne rootID Prüfung --
 if (!is_array(\$batch)) return;
 
 // --- Profile Creation (unverändert) ---
@@ -998,6 +1000,7 @@ if (is_array(\$profiles)) {
 }
 
 foreach (\$batch as \$item) {
+    // -- ÄNDERUNG: rootID wird nun für jedes Item individuell gesetzt --
     \$rootID    = \$item['RemoteRootID'] ?? 0;
     if (\$rootID <= 0) continue;
     
@@ -1009,34 +1012,20 @@ foreach (\$batch as \$item) {
         \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
         \$path      = \$item['Path'] ?? [];
 
-        // 1. PFAD AUFLÖSEN (Best Practice #3: Ident-basiert)
+        // 1. PFAD AUFLÖSEN
         \$currentParent = \$rootID;
         foreach (\$path as \$index => \$nodeName) {
             if (\$index === count(\$path) - 1) break;
-            
-            // Wir erzeugen einen deterministischen Ident für diesen Pfad-Knoten
-            \$nodeIdent = 'RS_NODE_' . md5(\$nodeName);
-            
-            // A. Zuerst über Ident suchen
-            \$childID = @IPS_GetObjectIDByIdent(\$nodeIdent, \$currentParent);
-            
-            // B. Fallback auf Namen (für Altsysteme), dann Ident setzen
-            if (!\$childID) {
-                \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-                if (\$childID > 0) @IPS_SetIdent(\$childID, \$nodeIdent);
-            }
-
-            // C. Erstellen, falls immer noch nicht gefunden
+            \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
             if (!\$childID && \$autoCreate) {
                 \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
                 IPS_SetParent(\$childID, \$currentParent);
                 IPS_SetName(\$childID, \$nodeName);
-                IPS_SetIdent(\$childID, \$nodeIdent);
             }
             if (\$childID) \$currentParent = \$childID;
         }
 
-        // 2. VARIABLE SUCHEN (Nutzt bereits Idents - Best Practice konform)
+        // 2. VARIABLE SUCHEN
         \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$currentParent);
         if (!\$remoteID) {
             foreach (IPS_GetChildrenIDs(\$currentParent) as \$cID) {
