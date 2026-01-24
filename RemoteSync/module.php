@@ -815,6 +815,11 @@ class RemoteSync extends IPSModule
             $variables = $state['buffer'][$MappingID];
             $totalItems = count($variables);
 
+            // --- SONDE 3: Sendevorgang prüfen ---
+            if (isset($variables[37889])) {
+                $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Set $MappingID. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
+            }
+
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch for $MappingID: $totalItems", KL_MESSAGE);
 
             // Puffer-Segment sofort leeren
