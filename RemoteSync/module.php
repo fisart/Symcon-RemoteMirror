@@ -303,52 +303,70 @@ class RemoteSync extends IPSModule
         $remoteSecID = (int)$target['RemoteSecretsID'];
 
         try {
-            $gwID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Gateway");
+            // Wir nutzen jetzt die stabilen Idents RS_Gateway und RS_Receiver
+            $gwID = $this->FindRemoteScript($scriptRoot, "RS_Gateway");
             $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
 
             $gwCode = $this->GenerateGatewayCode($remoteSecID);
             $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
-            $rxID = $this->FindRemoteScript($scriptRoot, "RemoteSync_Receiver");
+            $rxID = $this->FindRemoteScript($scriptRoot, "RS_Receiver");
             $this->SendDebug("RS_Install", "Receiver Script located/created at ID: " . $rxID, 0);
 
             $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
 
             $this->SendDebug("RS_Install", "Scripts successfully updated on Remote System.", 0);
-            echo "Success: Scripts installed on $Folder";
+            echo "Success: Scripts installed on $Folder (Ident-based)";
         } catch (Exception $e) {
             $this->SendDebug("RS_Error", "Exception during Install: " . $e->getMessage(), 0);
             echo "Error: " . $e->getMessage();
         }
     }
 
-
-    private function FindRemoteScript(int $parentID, string $name): int
+    private function FindRemoteScript(int $parentID, string $ident): int
     {
+        // 1. VERSUCH: Suche über Ident (Best Practice #3)
         try {
-            // 1. Suche nach existierendem Skript
+            // IPS_GetObjectIDByIdent wirft via RPC eine Exception, wenn nichts gefunden wird.
+            // Wir fangen diese im catch-Block ab, um den Absturz zu verhindern.
+            $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
+            if ($id > 0) {
+                return $id;
+            }
+        } catch (Exception $e) {
+            // Ident nicht gefunden – kein Fehler, wir machen mit dem Fallback weiter.
+        }
+
+        // 2. VERSUCH: Fallback auf Namen (Abwärtskompatibilität)
+        try {
+            $oldName = ($ident === 'RS_Gateway') ? 'RemoteSync_Gateway' : 'RemoteSync_Receiver';
             $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
             if (is_array($children)) {
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
-                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $name) {
+                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $oldName) {
+                        // Skript über Namen gefunden! Jetzt Ident für die Zukunft setzen.
+                        $this->rpcClient->IPS_SetIdent($cID, $ident);
                         return $cID;
                     }
                 }
             }
+        } catch (Exception $e) {
+            // Fehler beim Durchlaufen (z.B. ParentID existiert nicht)
+        }
 
-            // 2. Erstellung, falls nicht gefunden
+        // 3. SCHRITT: Neuerstellung (falls weder Ident noch Name gefunden wurden)
+        try {
             $id = $this->rpcClient->IPS_CreateScript(0);
             $this->rpcClient->IPS_SetParent($id, $parentID);
-            $this->rpcClient->IPS_SetName($id, $name);
-
+            $this->rpcClient->IPS_SetIdent($id, $ident);
+            $this->rpcClient->IPS_SetName($id, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
             return $id;
         } catch (Exception $e) {
-            $this->Log("RPC Error in FindRemoteScript: " . $e->getMessage(), KL_MESSAGE);
+            $this->Log("FindRemoteScript Critical Error: " . $e->getMessage(), KL_ERROR);
             return 0;
         }
     }
-
     // --- RUNTIME ---
 
     public function ApplyChanges()
