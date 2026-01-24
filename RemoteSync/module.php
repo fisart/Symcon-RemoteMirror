@@ -348,7 +348,7 @@ class RemoteSync extends IPSModule
         $this->config = [];
 
         // 1. Timer initial stoppen
-        $this->SetTimerInterval('StartSyncTimer', 0);
+        //$this->SetTimerInterval('StartSyncTimer', 0);
 
         // --- NACHRICHTEN-CLEANUP ---
         $messages = $this->GetMessageList();
