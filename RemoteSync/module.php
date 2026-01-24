@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.2
+// Version 1.6.4
 
 class RemoteSync extends IPSModule
 {
@@ -626,49 +626,57 @@ class RemoteSync extends IPSModule
         foreach ($this->config['SyncList'] as $item) {
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
 
-                // --- Gruppierung nach Folder (Server) ---
                 $folderName = $item['Folder'] ?? 'Unknown';
-
-                // Für das Performance Monitoring (Ident-konform)
                 $folderHash = md5($folderName);
                 $short = substr($folderHash, 0, 20);
 
-                // NEU v1.6.3: Wir reichen den Wert $Value an GetPayload weiter
                 $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots'], $Value);
 
                 if ($payload) {
-                    // Unified State Access (Batch, Events, Starts)
-                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+                    // --- NEU v1.6.4: State-Lock zur Vermeidung von Race Conditions ---
+                    $stateLock = "RS_StateLock_" . $this->InstanceID;
+                    // Wir warten maximal 1000ms auf den Zugriff (RAM-Operationen sind extrem schnell)
+                    if (IPS_SemaphoreEnter($stateLock, 1000)) {
+                        try {
+                            $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    // --- NEUE LOGIK v1.6.2 (Anti-Conflation / Option A) ---
-                    $bufferKey = (string)$localID;
-                    if (!empty($item['FullHistory'])) {
-                        $bufferKey = $localID . '_' . microtime(true);
+                            // v1.6.2 Logik (Anti-Conflation)
+                            $bufferKey = (string)$localID;
+                            if (!empty($item['FullHistory'])) {
+                                $bufferKey = $localID . '_' . microtime(true);
+                            }
+
+                            // 1. In den segmentierten Puffer schreiben
+                            $state['buffer'][$folderName][$bufferKey] = $payload;
+
+                            // 2. Update event counter
+                            $state['events'][$folderName] = ($state['events'][$folderName] ?? 0) + 1;
+
+                            // 3. Update processing lag start time
+                            if (!isset($state['starts'][$folderName]) || $state['starts'][$folderName] == 0) {
+                                $state['starts'][$folderName] = microtime(true);
+                            }
+
+                            // Status zurückschreiben (NOCH INNERHALB DES LOCKS)
+                            $this->WriteAttributeString('_SyncState', json_encode($state));
+                        } finally {
+                            IPS_SemaphoreLeave($stateLock);
+                        }
                     }
 
-                    // 1. In den segmentierten Puffer schreiben (Key ist jetzt dynamisch)
-                    $state['buffer'][$folderName][$bufferKey] = $payload;
-
-                    // 2. Update event counter für Deflation Tracking (pro Server)
-                    $state['events'][$folderName] = ($state['events'][$folderName] ?? 0) + 1;
-
-                    // 3. Update processing lag start time (pro Server)
-                    if (!isset($state['starts'][$folderName]) || $state['starts'][$folderName] == 0) {
-                        $state['starts'][$folderName] = microtime(true);
-                    }
-
-                    // Status zurückschreiben
-                    $this->WriteAttributeString('_SyncState', json_encode($state));
-
-                    // 4. Update Queue Size Monitoring (jetzt pro Server)
+                    // 4. Update Queue Size Monitoring (Außerhalb des State-Locks)
+                    // Da wir das Attribut gerade geschrieben haben, lesen wir den Count neu
                     $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-                    if ($qVarID > 0) SetValue($qVarID, count($state['buffer'][$folderName]));
+                    if ($qVarID > 0) {
+                        $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
+                        SetValue($qVarID, count($currentState['buffer'][$folderName] ?? []));
+                    }
 
                     if ($this->ReadPropertyBoolean('DebugMode')) {
-                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Server Bucket '$folderName' (Key: $bufferKey).", KL_MESSAGE);
+                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Bucket '$folderName'.", KL_MESSAGE);
                     }
 
-                    // 5. Worker-Start: Wir übergeben nun den FolderName an den Worker
+                    // 5. Worker-Start
                     $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
                     @IPS_RunScriptText($script);
                 }
@@ -817,62 +825,76 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer(string $FolderName = "")
     {
-        // Wir behalten dein Log-Format bei
         $this->Log("!!! SEMAPHORE-CHECK: Ich bin in FlushBuffer gelandet für Server-Bucket: $FolderName !!!", KL_MESSAGE);
 
         if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
-        // Ident-konformer Hash für die Semaphore und Performance-Variablen basierend auf dem Server (Folder)
         $folderHash = md5($FolderName);
         $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash;
         $short = substr($folderHash, 0, 20);
 
-        // Semaphore-Einstieg (jetzt pro Server)
         if (!IPS_SemaphoreEnter($lockName, 0)) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy) for Server $FolderName", KL_MESSAGE);
             return;
         }
 
         try {
-            $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+            // --- NEU v1.6.4: State-Lock für atomares Auslesen und Leeren des Puffers ---
+            $stateLock = "RS_StateLock_" . $this->InstanceID;
+            $variables = [];
+            $totalItems = 0;
+            $skipped = 0;
+            $firstEventTime = microtime(true);
 
-            if (!isset($state['buffer'][$FolderName]) || count($state['buffer'][$FolderName]) === 0) {
-                IPS_SemaphoreLeave($lockName);
-                return;
+            if (IPS_SemaphoreEnter($stateLock, 1000)) {
+                try {
+                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+
+                    if (!isset($state['buffer'][$FolderName]) || count($state['buffer'][$FolderName]) === 0) {
+                        IPS_SemaphoreLeave($stateLock);
+                        IPS_SemaphoreLeave($lockName);
+                        return;
+                    }
+
+                    $variables = $state['buffer'][$FolderName];
+                    $totalItems = count($variables);
+
+                    // Puffer-Segment leeren
+                    unset($state['buffer'][$FolderName]);
+
+                    // Metriken Snapshots
+                    $eventCount = $state['events'][$FolderName] ?? $totalItems;
+                    $skipped = max(0, $eventCount - $totalItems);
+                    $state['events'][$FolderName] = 0;
+
+                    $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
+                    $state['starts'][$FolderName] = 0;
+
+                    // Sofort zurückschreiben, damit der Puffer für andere Threads als "leer" gilt
+                    $this->WriteAttributeString('_SyncState', json_encode($state));
+                } finally {
+                    IPS_SemaphoreLeave($stateLock);
+                }
+            } else {
+                // Falls der State-Lock nicht zu bekommen ist
+                throw new Exception("State-Lock timeout in FlushBuffer");
             }
 
-            $variables = $state['buffer'][$FolderName];
-            $totalItems = count($variables);
+            // --- AB HIER: Verarbeitung der extrahierten $variables (außerhalb des State-Locks) ---
 
-            // --- DEIN TRACE-LOG FÜR 37889 (BEIBEHALTEN) ---
             if (isset($variables[37889])) {
                 $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Server $FolderName. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
             }
 
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this server-batch for $FolderName: $totalItems", KL_MESSAGE);
 
-            // Puffer-Segment leeren
-            unset($state['buffer'][$FolderName]);
-
-            // Deflation Tracking Snapshot
-            $eventCount = $state['events'][$FolderName] ?? $totalItems;
-            $skipped = max(0, $eventCount - $totalItems);
-            $state['events'][$FolderName] = 0;
-
-            // Processing Lag Snapshot
-            $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
-            $state['starts'][$FolderName] = 0;
-
-            // Write consolidated state back
-            $this->WriteAttributeString('_SyncState', json_encode($state));
-
             // Queue Size Monitoring Reset
             $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
             if ($qVarID > 0) SetValue($qVarID, 0);
 
-            // Config-Abruf für den Server
+            // Config-Abruf
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($FolderName);
 
@@ -881,7 +903,6 @@ class RemoteSync extends IPSModule
                 return;
             }
 
-            // --- DEIN TRACE-LOG FÜR 25458 (BEIBEHALTEN) ---
             if (isset($variables[25458])) {
                 $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
             }
@@ -898,7 +919,6 @@ class RemoteSync extends IPSModule
                 }
             }
 
-            // --- NEUE PAKETSTRUKTUR (Wegfall TargetID im Header) ---
             $packet = [
                 'Batch'      => $batch,
                 'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
@@ -906,11 +926,8 @@ class RemoteSync extends IPSModule
             ];
 
             $jsonPacket = json_encode($packet);
-
             if ($jsonPacket === false) {
-                $errorMsg = json_last_error_msg();
-                $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed. Error: " . $errorMsg, KL_ERROR);
-                return;
+                throw new Exception("JSON Encoding failed: " . json_last_error_msg());
             }
 
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
@@ -923,7 +940,7 @@ class RemoteSync extends IPSModule
                 $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // --- DEINE PERFORMANCE-UPDATES (EXPLIZIT BEIBEHALTEN) ---
+                // Performance Updates
                 $rttVarID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
                 if ($rttVarID > 0) SetValue($rttVarID, $duration);
 
@@ -950,7 +967,7 @@ class RemoteSync extends IPSModule
         } finally {
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check (jetzt pro Server)
+            // Yield-Check (Atomarer Check am Ende)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
             if (isset($checkState['buffer'][$FolderName]) && count($checkState['buffer'][$FolderName]) > 0) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission for Server $FolderName. Restarting...", KL_MESSAGE);
