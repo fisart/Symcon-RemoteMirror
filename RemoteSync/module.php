@@ -435,14 +435,13 @@ class RemoteSync extends IPSModule
     {
         switch ($Ident) {
             case "UpdateRow":
-                $row = json_decode($Value, true);
-                if (!$row || !isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) return;
+                $rows = json_decode($Value, true);
+                if (!is_array($rows)) return;
 
-                // --- NEUE LOGIK ---
-                if ($row['Delete']) {
-                    $row['Active'] = false;
+                // Falls IP-Symcon nur ein einzelnes Objekt sendet, in Array umwandeln
+                if (isset($rows['ObjectID'])) {
+                    $rows = [$rows];
                 }
-                // ------------------
 
                 $cache = json_decode($this->ReadAttributeString("SyncListCache"), true);
                 if (!is_array($cache)) $cache = [];
@@ -453,8 +452,18 @@ class RemoteSync extends IPSModule
                     $map[$k] = $item;
                 }
 
-                $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
-                $map[$key] = $row;
+                foreach ($rows as $row) {
+                    if (!isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) continue;
+
+                    // --- NEUE LOGIK (Pro Zeile angewendet) ---
+                    if ($row['Delete']) {
+                        $row['Active'] = false;
+                    }
+                    // -----------------------------------------
+
+                    $key = $row['Folder'] . '_' . $row['LocalRootID'] . '_' . $row['ObjectID'];
+                    $map[$key] = $row;
+                }
 
                 $this->WriteAttributeString("SyncListCache", json_encode(array_values($map)));
                 break;
