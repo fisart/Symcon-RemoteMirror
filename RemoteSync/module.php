@@ -392,9 +392,7 @@ class RemoteSync extends IPSModule
             $rootID = (int)($item['LocalRootID'] ?? 0);
 
             // --- SONDE 1: Einstieg prüfen ---
-            if ($vID == 37889) {
-                $this->Log("CONSISTENCY: Testing Var 37889. Folder: $folder, RootID: $rootID", KL_MESSAGE);
-            }
+
 
             if ($vID === 0 || !IPS_ObjectExists($vID)) {
                 $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
@@ -413,9 +411,7 @@ class RemoteSync extends IPSModule
 
             if (!$mappingIsValid) {
                 // --- SONDE 2: Ablehnungsgrund prüfen ---
-                if ($vID == 37889) {
-                    $this->Log("CONSISTENCY: Var 37889 REJECTED! Mapping for Folder '$folder' and Root '$rootID' not valid or IsChildOf failed.", KL_MESSAGE);
-                }
+
                 $this->Log("Consistency Check: Dropping ID $vID - Mapping or hierarchy changed.", KL_WARNING);
                 continue;
             }
@@ -455,7 +451,7 @@ class RemoteSync extends IPSModule
 
     public function RequestAction($Ident, $Value)
     {
-        $this->Log("REQ_RAW: " . $Value, KL_MESSAGE);
+
         switch ($Ident) {
             case "UpdateRow":
                 $rows = json_decode($Value, true);
@@ -518,9 +514,6 @@ class RemoteSync extends IPSModule
     {
         if (!$this->LoadConfig()) return;
 
-        // --- SONDE 4: Roots-Konfiguration prüfen ---
-        $this->Log("PROCESS_DEBUG: Current Roots known to script: " . $this->ReadPropertyString("Roots"), KL_MESSAGE);
-
         foreach ($this->config['SyncList'] as $item) {
             if (!empty($item['Active']) || !empty($item['Delete'])) {
                 $this->AddToBuffer((int)$item['ObjectID']);
@@ -545,9 +538,6 @@ class RemoteSync extends IPSModule
         $remoteRootID = 0;
 
         foreach ($roots as $root) {
-            if ($localID == 37889) {
-                $this->Log("CHECKMAPPING: Testing Var 37889 against Root " . $root['LocalRootID'] . " for Folder " . $root['TargetFolder'], KL_MESSAGE);
-            }
             if (($root['TargetFolder'] ?? '') === $folderName) {
                 if ($this->IsChildOf($localID, (int)$root['LocalRootID'])) {
                     $localRootID = (int)$root['LocalRootID'];
@@ -670,10 +660,6 @@ class RemoteSync extends IPSModule
                     if ($qVarID > 0) {
                         $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
                         SetValue($qVarID, count($currentState['buffer'][$folderName] ?? []));
-                    }
-
-                    if ($this->ReadPropertyBoolean('DebugMode')) {
-                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Bucket '$folderName'.", KL_MESSAGE);
                     }
 
                     // 5. Worker-Start
@@ -884,10 +870,6 @@ class RemoteSync extends IPSModule
 
             // --- AB HIER: Verarbeitung der extrahierten $variables (außerhalb des State-Locks) ---
 
-            if (isset($variables[37889])) {
-                $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Server $FolderName. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
-            }
-
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this server-batch for $FolderName: $totalItems", KL_MESSAGE);
 
             // Queue Size Monitoring Reset
@@ -903,9 +885,6 @@ class RemoteSync extends IPSModule
                 return;
             }
 
-            if (isset($variables[25458])) {
-                $this->Log("[TRACE-25458] FlushBuffer: ID 25458 IS PRESENT in the batch. Value: " . (string)$variables[25458]['Value'], KL_NOTIFY);
-            }
 
             $batch = array_values($variables);
             $profiles = [];
@@ -934,7 +913,6 @@ class RemoteSync extends IPSModule
             $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
             if ($receiverID > 0 && $this->rpcClient) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: Sending " . count($batch) . " items (" . $sizeKB . " KB) to server " . $FolderName, KL_MESSAGE);
 
                 $startTime = microtime(true);
                 $result = @$this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
@@ -956,9 +934,6 @@ class RemoteSync extends IPSModule
                 $lag = round(microtime(true) - $firstEventTime, 2);
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
-
-                $this->Log("[PERF-DEBUG] Server: $FolderName, IdentShort: $short, Time: $duration ms, Lag: $lag s", KL_MESSAGE);
-                $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
