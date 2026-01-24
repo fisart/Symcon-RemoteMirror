@@ -29,8 +29,6 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
         $this->RegisterPropertyString('LocalServerKey', '');
 
-        // Diese Property dient nur noch als persistente Hülle für die Sync-Liste
-        $this->RegisterPropertyString('SyncList', '[]');
 
         // --- MANAGER PROPERTIES ---
         $this->RegisterPropertyString("Targets", "[]");
@@ -57,10 +55,6 @@ class RemoteSync extends IPSModule
     // --- FORM & UI ---
     public function GetConfigurationForm()
     {
-        // Sicherstellen, dass der RAM-Arbeitsspeicher (Blueprint) beim Start gefüllt ist
-        if ($this->ReadAttributeString("SyncListCache") === "[]") {
-            $this->WriteAttributeString("SyncListCache", $this->ReadPropertyString("SyncList"));
-        }
 
         $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
 
@@ -391,10 +385,7 @@ class RemoteSync extends IPSModule
         // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
 
-        if ($syncListRaw === "" || $syncListRaw === "[]") {
-            $syncListRaw = $this->ReadPropertyString("SyncList");
-            $this->WriteAttributeString("SyncListCache", $syncListRaw);
-        }
+
 
         $syncList = json_decode($syncListRaw, true) ?: [];
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
@@ -510,16 +501,11 @@ class RemoteSync extends IPSModule
 
     public function SaveSelections()
     {
-        // Wir setzen die Property permanent auf leer, da wir nun nur noch 
-        // mit dem Attribut SyncListCache arbeiten.
-        IPS_SetProperty($this->InstanceID, "SyncList", "[]");
-
-        // Triggert ApplyChanges, was die neue Bereinigungs-Logik ausführt
-        IPS_ApplyChanges($this->InstanceID);
-
-        echo "Selection saved and configuration cleaned.";
+        // Wir triggern nur noch ApplyChanges, um die Nachrichten-Registrierung zu aktualisieren.
+        // Die Daten sind bereits im Attribut SyncListCache gespeichert (via RequestAction).
+        $this->ApplyChanges();
+        echo "Selection saved.";
     }
-
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
