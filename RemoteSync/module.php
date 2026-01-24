@@ -811,8 +811,6 @@ class RemoteSync extends IPSModule
 
     public function FlushBuffer(string $FolderName = "")
     {
-        $this->Log("!!! SEMAPHORE-CHECK: Ich bin in FlushBuffer gelandet für Server-Bucket: $FolderName !!!", KL_MESSAGE);
-
         if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
@@ -822,7 +820,6 @@ class RemoteSync extends IPSModule
         $short = substr($folderHash, 0, 20);
 
         if (!IPS_SemaphoreEnter($lockName, 0)) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy) for Server $FolderName", KL_MESSAGE);
             return;
         }
 
@@ -945,7 +942,6 @@ class RemoteSync extends IPSModule
             // Yield-Check (Atomarer Check am Ende)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
             if (isset($checkState['buffer'][$FolderName]) && count($checkState['buffer'][$FolderName]) > 0) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: NEW DATA arrived during transmission for Server $FolderName. Restarting...", KL_MESSAGE);
                 $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "');";
                 @IPS_RunScriptText($script);
             } else {
