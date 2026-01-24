@@ -123,6 +123,7 @@ class RemoteSync extends IPSModule
                     "ObjectID"    => $vID,
                     "Name"        => IPS_GetName($vID),
                     "Active"      => $stateCache[$key]['Active'] ?? false,
+                    "FullHistory" => $stateCache[$key]['FullHistory'] ?? false, // NEU v1.6.2
                     "Action"      => $stateCache[$key]['Action'] ?? false,
                     "Delete"      => $stateCache[$key]['Delete'] ?? false
                 ];
@@ -147,12 +148,17 @@ class RemoteSync extends IPSModule
                             ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
+                            // NEU v1.6.2: History Gruppe
+                            ["type" => "Button", "caption" => "Hist ALL", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', true, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Hist NONE", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Label", "caption" => "|", "width" => "15px"],
+
                             // Action Gruppe
                             ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
-                            // NEU: Delete Gruppe
+                            // Delete Gruppe
                             ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, '$folderName', $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
@@ -174,6 +180,7 @@ class RemoteSync extends IPSModule
                             ["name" => "Name", "caption" => "Variable Name", "width" => "auto"],
                             ["name" => "LocalRootID", "caption" => "Root", "visible" => false], // Versteckt für interne Logik
                             ["name" => "Active", "caption" => "Sync", "width" => "60px", "edit" => ["type" => "CheckBox"]],
+                            ["name" => "FullHistory", "caption" => "Full Hist.", "width" => "75px", "edit" => ["type" => "CheckBox"]], // NEU v1.6.2
                             ["name" => "Action", "caption" => "R-Action", "width" => "70px", "edit" => ["type" => "CheckBox"]],
                             ["name" => "Delete", "caption" => "Del Rem.", "width" => "80px", "edit" => ["type" => "CheckBox"]]
                         ],
@@ -242,7 +249,17 @@ class RemoteSync extends IPSModule
         foreach ($foundVars as $vID) {
             $key = $Folder . '_' . $LocalRootID . '_' . $vID;
             if (!isset($map[$key])) {
-                $map[$key] = ["Folder" => $Folder, "LocalRootID" => $LocalRootID, "ObjectID" => $vID, "Name" => IPS_GetName($vID), "Active" => false, "Action" => false, "Delete" => false];
+                // Initialisierung eines neuen Eintrags mit dem Feld 'FullHistory'
+                $map[$key] = [
+                    "Folder"      => $Folder,
+                    "LocalRootID" => $LocalRootID,
+                    "ObjectID"    => $vID,
+                    "Name"        => IPS_GetName($vID),
+                    "Active"      => false,
+                    "FullHistory" => false, // NEU v1.6.2
+                    "Action"      => false,
+                    "Delete"      => false
+                ];
             }
 
             $map[$key][$Column] = $State;
@@ -461,9 +478,10 @@ class RemoteSync extends IPSModule
                 foreach ($rows as $row) {
                     if (!isset($row['Folder'], $row['LocalRootID'], $row['ObjectID'])) continue;
 
-                    // --- NEUE LOGIK (Pro Zeile angewendet) ---
+                    // --- NEUE LOGIK v1.6.2 (Pro Zeile angewendet) ---
                     if ($row['Delete']) {
                         $row['Active'] = false;
+                        $row['FullHistory'] = false; // NEU v1.6.2: Konsistenz-Check
                     }
                     // -----------------------------------------
 
@@ -601,11 +619,10 @@ class RemoteSync extends IPSModule
         foreach ($this->config['SyncList'] as $item) {
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
 
-                // --- ÄNDERUNG: Gruppierung nach Folder (Server) statt nach Mapping ---
+                // --- Gruppierung nach Folder (Server) ---
                 $folderName = $item['Folder'] ?? 'Unknown';
 
-                // Für das Performance Monitoring (Ident-konform) nutzen wir weiterhin einen Hash,
-                // aber nun basierend auf dem Folder Namen.
+                // Für das Performance Monitoring (Ident-konform)
                 $folderHash = md5($folderName);
                 $short = substr($folderHash, 0, 20);
 
@@ -615,9 +632,16 @@ class RemoteSync extends IPSModule
                     // Unified State Access (Batch, Events, Starts)
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    // 1. In den segmentierten Puffer schreiben (Key ist jetzt der FolderName)
-                    // Deduplizierung greift hier pro Server: Die letzte Änderung gewinnt.
-                    $state['buffer'][$folderName][$localID] = $payload;
+                    // --- NEUE LOGIK v1.6.2 (Anti-Conflation / Option A) ---
+                    // Falls 'FullHistory' aktiv ist, erzeugen wir einen unique Key,
+                    // ansonsten nutzen wir die lokale ID (letzter Wert gewinnt).
+                    $bufferKey = (string)$localID;
+                    if (!empty($item['FullHistory'])) {
+                        $bufferKey = $localID . '_' . microtime(true);
+                    }
+
+                    // 1. In den segmentierten Puffer schreiben (Key ist jetzt dynamisch)
+                    $state['buffer'][$folderName][$bufferKey] = $payload;
 
                     // 2. Update event counter für Deflation Tracking (pro Server)
                     $state['events'][$folderName] = ($state['events'][$folderName] ?? 0) + 1;
@@ -635,7 +659,7 @@ class RemoteSync extends IPSModule
                     if ($qVarID > 0) SetValue($qVarID, count($state['buffer'][$folderName]));
 
                     if ($this->ReadPropertyBoolean('DebugMode')) {
-                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Server Bucket '$folderName'.", KL_MESSAGE);
+                        $this->Log("[BUFFER-CHECK] AddToBuffer: Item $localID added to Server Bucket '$folderName' (Key: $bufferKey).", KL_MESSAGE);
                     }
 
                     // 5. Worker-Start: Wir übergeben nun den FolderName an den Worker
