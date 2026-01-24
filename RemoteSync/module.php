@@ -801,17 +801,18 @@ class RemoteSync extends IPSModule
         $lockName = "RS_Lock_" . $this->InstanceID . "_" . $MappingID;
         $short = substr($MappingID, 0, 20);
 
-        // Der Worker-Thread versucht hier als Erstes, die Semaphore zu betreten.
+        // 1. Semaphore betreten (Wenn besetzt, sofort raus)
         if (!IPS_SemaphoreEnter($lockName, 0)) {
             $this->Log("[BUFFER-CHECK] FlushBuffer: EXIT - already sending (Busy) for Set $MappingID", KL_MESSAGE);
             return;
         }
 
+        // 2. Unmittelbar nach dem Enter startet der try-finally Block für maximale Sicherheit
         try {
             $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
             if (!isset($state['buffer'][$MappingID]) || count($state['buffer'][$MappingID]) === 0) {
-                return;
+                return; // finally sorgt für SemaphoreLeave
             }
 
             // BATCH LIMITIERUNG (v1.6.0)
@@ -820,14 +821,9 @@ class RemoteSync extends IPSModule
             $variables = array_slice($fullSet, 0, $maxSize, true);
 
             $totalItems = count($variables);
-            $remainingInQueue = count($fullSet) - $totalItems;
+            $remainingItems = count($fullSet) - $totalItems;
 
-            // --- SONDE 3: Sendevorgang prüfen ---
-            if (isset($variables[37889])) {
-                $this->Log("TRACE_SEND: Variable 37889 IS in the batch for Set $MappingID. Delete-Flag is: " . ($variables[37889]['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
-            }
-
-            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this batch for $MappingID: $totalItems (Remaining in Queue: $remainingInQueue)", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items: $totalItems (Remaining in Queue: $remainingItems)", KL_MESSAGE);
 
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($firstVar['Folder']);
@@ -835,7 +831,7 @@ class RemoteSync extends IPSModule
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $firstVar['Folder'] . " failed.", KL_ERROR);
-                return;
+                return; // finally sorgt für SemaphoreLeave
             }
 
             // --- TRACE LOGIK FÜR ID 25458 ---
@@ -844,36 +840,22 @@ class RemoteSync extends IPSModule
             }
 
             $batch = array_values($variables);
-            $profiles = [];
-            if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
-                foreach ($batch as $item) {
-                    if (!empty($item['Profile']) && !isset($profiles[$item['Profile']])) {
-                        if (IPS_VariableProfileExists($item['Profile'])) {
-                            $profiles[$item['Profile']] = IPS_GetVariableProfile($item['Profile']);
-                        }
-                    }
-                }
-            }
-
             $packet = [
                 'TargetID'   => (int)$firstVar['RemoteRootID'],
                 'Batch'      => $batch,
                 'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
-                'Profiles'   => $profiles
+                'Profiles'   => $this->ReadPropertyBoolean('ReplicateProfiles') ? $this->GetProfilesForBatch($batch) : []
             ];
 
             $jsonPacket = json_encode($packet);
 
-            // --- JSON VALIDIERUNG ---
             if ($jsonPacket === false) {
-                $errorMsg = json_last_error_msg();
-                $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed. Error: " . $errorMsg, KL_ERROR);
-                return;
+                $this->Log("[BUFFER-CHECK] ERROR: JSON Encoding failed. Error: " . json_last_error_msg(), KL_ERROR);
+                return; // finally sorgt für SemaphoreLeave
             }
 
             // VOLUMETRIC MEASUREMENT
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-
             $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
 
             if ($receiverID > 0 && $this->rpcClient) {
@@ -887,22 +869,20 @@ class RemoteSync extends IPSModule
                 // TEMPORAL MEASUREMENT END
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-                // --- TRANSACTIONAL SUCCESS (v1.6.0): Nur gesendete Variablen aus State entfernen ---
+                // --- ERFOLGREICHER ABSCHLUSS: Nur gesendete Items löschen ---
                 $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
                 foreach ($variables as $localID => $payload) {
                     unset($currentState['buffer'][$MappingID][$localID]);
                 }
 
-                // Deflation Tracking Snapshot
+                // Snapshots für Metriken
                 $eventCount = $currentState['events'][$MappingID] ?? $totalItems;
                 $skipped = max(0, $eventCount - $totalItems);
                 $currentState['events'][$MappingID] = 0;
 
-                // Processing Lag Snapshot (v1.6.0: Reset nur bei Erfolg)
                 $firstEventTime = $currentState['starts'][$MappingID] ?? microtime(true);
                 $currentState['starts'][$MappingID] = 0;
 
-                // Konsolidierten Status zurückschreiben
                 $this->WriteAttributeString('_SyncState', json_encode($currentState));
 
                 // UPDATE PERFORMANCE VARIABLES
@@ -924,11 +904,11 @@ class RemoteSync extends IPSModule
 
                 // PREDICTIVE ETA (v1.6.0)
                 $rtt_sec = $duration > 0 ? $duration / 1000 : 1;
-                $eta = $rtt_sec + (ceil($remainingInQueue / $maxSize) * $rtt_sec);
+                $eta = $rtt_sec + (ceil($remainingItems / $maxSize) * $rtt_sec);
                 $etaVarID = @IPS_GetObjectIDByIdent("P" . $short, $this->InstanceID);
                 if ($etaVarID > 0) SetValue($etaVarID, $eta);
 
-                $this->Log("[PERF-DEBUG] Mapping: $MappingID, IdentShort: $short, Time: $duration ms, Lag: $lag s, ETA: $eta s", KL_MESSAGE);
+                $this->Log("[PERF-DEBUG] Mapping: $MappingID, RTT: $duration ms, Lag: $lag s, ETA: $eta s", KL_MESSAGE);
                 $this->Log("[BUFFER-CHECK] FlushBuffer: Remote response: " . $result . " (Time: " . $duration . "ms)", KL_MESSAGE);
             }
         } catch (Exception $e) {
@@ -938,19 +918,16 @@ class RemoteSync extends IPSModule
             $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
             if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
         } finally {
-            // Semaphore UNBEDINGT wieder freigeben
+            // 3. Semaphore UNBEDINGT wieder freigeben
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check: Sind neue Daten (oder Reste durch Batch-Limit) vorhanden?
+            // Yield-Check: Sind noch Daten da? (Entweder neue oder Reste durch das Batch-Limit)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
             if (isset($checkState['buffer'][$MappingID]) && count($checkState['buffer'][$MappingID]) > 0) {
                 $this->Log("[BUFFER-CHECK] FlushBuffer: DATA PENDING for $MappingID. Restarting...", KL_MESSAGE);
-                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');";
-                @IPS_RunScriptText($script);
+                @IPS_RunScriptText("RS_FlushBuffer(" . $this->InstanceID . ", '" . $MappingID . "');");
             } else {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED for $MappingID. No more data pending.", KL_MESSAGE);
-
-                // Queue Size Monitoring Reset
+                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED for $MappingID.", KL_MESSAGE);
                 $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
                 if ($qVarID > 0) SetValue($qVarID, 0);
             }
