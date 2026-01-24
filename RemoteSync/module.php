@@ -378,6 +378,11 @@ class RemoteSync extends IPSModule
             $folder = $item['Folder'] ?? '';
             $rootID = (int)($item['LocalRootID'] ?? 0);
 
+            // --- SONDE 1: Einstieg prüfen ---
+            if ($vID == 37889) {
+                $this->Log("CONSISTENCY: Testing Var 37889. Folder: $folder, RootID: $rootID", KL_MESSAGE);
+            }
+
             if ($vID === 0 || !IPS_ObjectExists($vID)) {
                 $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
                 continue;
@@ -394,6 +399,10 @@ class RemoteSync extends IPSModule
             }
 
             if (!$mappingIsValid) {
+                // --- SONDE 2: Ablehnungsgrund prüfen ---
+                if ($vID == 37889) {
+                    $this->Log("CONSISTENCY: Var 37889 REJECTED! Mapping for Folder '$folder' and Root '$rootID' not valid or IsChildOf failed.", KL_MESSAGE);
+                }
                 $this->Log("Consistency Check: Dropping ID $vID - Mapping or hierarchy changed.", KL_WARNING);
                 continue;
             }
