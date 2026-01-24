@@ -503,6 +503,9 @@ class RemoteSync extends IPSModule
         $this->SetTimerInterval('StartSyncTimer', 0);
         if (!$this->LoadConfig()) return;
 
+        // --- SONDE 4: Roots-Konfiguration prüfen ---
+        $this->Log("PROCESS_DEBUG: Current Roots known to script: " . $this->ReadPropertyString("Roots"), KL_MESSAGE);
+
         foreach ($this->config['SyncList'] as $item) {
             if (!empty($item['Active']) || !empty($item['Delete'])) {
                 $this->AddToBuffer((int)$item['ObjectID']);
