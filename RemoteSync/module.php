@@ -587,7 +587,7 @@ class RemoteSync extends IPSModule
 
                 if ($payload) {
                     if ($localID == 37889) {
-                        $this->Log("TRACEDELETE: Variable 21557 checked. Delete-Flag in Payload is: " . ($payload['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
+                        $this->Log("TRACEDELETE: Variable 37889 checked. Delete-Flag in Payload is: " . ($payload['Delete'] ? 'TRUE' : 'FALSE'), KL_MESSAGE);
                     }
                     // Unified State Access (Batch, Events, Starts)
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
