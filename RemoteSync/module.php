@@ -509,7 +509,9 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        $this->AddToBuffer($SenderID);
+        // Bei VM_UPDATE enthält $Data[0] den neuen Wert der Variable.
+        // Wir übergeben diesen direkt an AddToBuffer, um Race Conditions zu vermeiden.
+        $this->AddToBuffer($SenderID, $Data[0]);
     }
 
     public function ProcessSync()
@@ -535,7 +537,7 @@ class RemoteSync extends IPSModule
         }
         return null;
     }
-    private function GetPayload(int $localID, array $itemConfig, array $roots): ?array
+    private function GetPayload(int $localID, array $itemConfig, array $roots, $Value = null): ?array
     {
         $folderName = $itemConfig['Folder'];
         $foundMapping = false;
@@ -568,12 +570,17 @@ class RemoteSync extends IPSModule
             $currentID = IPS_GetParent($currentID);
         }
 
+        // NEU v1.6.3: Wertermittlung ohne Race Condition
+        // Wenn $Value nicht null ist (vom Event geliefert), nutzen wir diesen.
+        // Andernfalls (manueller Sync) lesen wir den aktuellen Stand.
+        $finalValue = ($Value !== null) ? $Value : GetValue($localID);
+
         return [
             'LocalID'      => $localID,
             'LocalSetID'   => $localRootID, // Identifikator für die Performance-Variable
             'RemoteRootID' => $remoteRootID, // Hilfswert für die Gruppierung
             'Folder'       => $folderName,   // Hilfswert
-            'Value'        => GetValue($localID),
+            'Value'        => $finalValue,   // Geändert v1.6.3
             'Type'         => $var['VariableType'],
             'Profile'      => $var['VariableCustomProfile'] ?: $var['VariableProfile'],
             'Name'         => IPS_GetName($localID),
@@ -612,7 +619,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    private function AddToBuffer($localID)
+    private function AddToBuffer($localID, $Value = null)
     {
         if (IPS_GetKernelRunlevel() !== KR_READY || !$this->LoadConfig()) return;
 
@@ -626,15 +633,14 @@ class RemoteSync extends IPSModule
                 $folderHash = md5($folderName);
                 $short = substr($folderHash, 0, 20);
 
-                $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots']);
+                // NEU v1.6.3: Wir reichen den Wert $Value an GetPayload weiter
+                $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots'], $Value);
 
                 if ($payload) {
                     // Unified State Access (Batch, Events, Starts)
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
                     // --- NEUE LOGIK v1.6.2 (Anti-Conflation / Option A) ---
-                    // Falls 'FullHistory' aktiv ist, erzeugen wir einen unique Key,
-                    // ansonsten nutzen wir die lokale ID (letzter Wert gewinnt).
                     $bufferKey = (string)$localID;
                     if (!empty($item['FullHistory'])) {
                         $bufferKey = $localID . '_' . microtime(true);
