@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.9
+// Version 1.7.0
 
 class RemoteSync extends IPSModule
 {
@@ -158,8 +158,7 @@ class RemoteSync extends IPSModule
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // Management & Installation
-                            ["type" => "Button", "caption" => "💾 SAVE ALL", "onClick" => "RS_SaveSelections(\$id);", "width" => "100px"],
-                            ["type" => "Button", "caption" => "INSTALL REMOTE", "onClick" => "RS_InstallRemoteScripts(\$id, '$folderName');"]
+                            ["type" => "Button", "caption" => "💾 SAVE ALL", "onClick" => "RS_SaveSelections(\$id);", "width" => "100px"]
                         ]
                     ],
                     [

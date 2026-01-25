@@ -39,6 +39,10 @@
                 { 
                     "name": "RemoteSecretsID", "caption": "Remote SEC ID", "width": "130px", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
+                },
+                { 
+                    "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", 
+                    "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_InstallRemoteScripts($id, $Name);" } 
                 }
             ]
         },
