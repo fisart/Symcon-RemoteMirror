@@ -26,7 +26,6 @@
             "type": "List",
             "name": "Targets",
             "caption": "Remote Targets",
-            "popup": {}, 
             "rowCount": 5,
             "add": true,
             "delete": true,
@@ -40,10 +39,24 @@
                 { 
                     "name": "RemoteSecretsID", "caption": "Remote SEC ID", "width": "130px", "add": 10000, 
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
+                }
+            ]
+        },
+        {
+            "type": "RowLayout",
+            "items": [
+                {
+                    "type": "Select",
+                    "name": "SelectedTargetForSetup",
+                    "caption": "Select Server to Setup",
+                    "options": []
                 },
                 { 
-                    "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", "add": "", 
-                    "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_OpenInstallationWizard($id, $Name, $RemoteKey, $RemoteScriptRootID, $RemoteSecretsID);" } 
+                    "type": "Button", 
+                    "name": "WizardButton",
+                    "caption": "🚀 Start Remote Setup Wizard", 
+                    "onClick": "RS_OpenInstallationWizard($id, $SelectedTargetForSetup);",
+                    "popup": {}
                 }
             ]
         },

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.0
+// Version 1.7.4
 
 class RemoteSync extends IPSModule
 {
@@ -53,6 +53,8 @@ class RemoteSync extends IPSModule
     }
 
     // --- FORM & UI ---
+
+
     public function GetConfigurationForm()
     {
 
@@ -78,8 +80,13 @@ class RemoteSync extends IPSModule
         $folderOptions = [['caption' => "Select Target Folder...", 'value' => ""]];
         foreach ($targets as $t) if (!empty($t['Name'])) $folderOptions[] = ['caption' => $t['Name'], 'value' => $t['Name']];
 
+        // --- NEU v1.7.4: Optionen für das zentrale Setup-Dropdown vorbereiten ---
+        $setupOptions = [['caption' => "Please select server...", 'value' => ""]];
+        foreach ($targets as $t) if (!empty($t['Name'])) $setupOptions[] = ['caption' => (string)$t['Name'], 'value' => (string)$t['Name']];
+
         // 3. Statische Elemente (Schritt 1 & 2) mit Dropdowns befüllen
-        $this->UpdateStaticFormElements($form['elements'], $serverOptions, $folderOptions);
+        // ÄNDERUNG: Übergabe des vierten Parameters $setupOptions
+        $this->UpdateStaticFormElements($form['elements'], $serverOptions, $folderOptions, $setupOptions);
 
         // 4. Cache-Mapping für schnellen Zugriff auf Checkbox-Zustände
         $stateCache = [];
@@ -191,8 +198,6 @@ class RemoteSync extends IPSModule
         return json_encode($form);
     }
 
-
-
     public function Destroy()
     {
         // Alle Timer sicher stoppen
@@ -202,14 +207,17 @@ class RemoteSync extends IPSModule
 
 
     // Hilfsfunktion zum rekursiven Befüllen der statischen Formular-Elemente
-    private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
+    private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions, $setupOptions): void
     {
         foreach ($elements as &$element) {
-            if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions);
+            if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions, $setupOptions);
             if (!isset($element['name'])) continue;
 
             // Globaler Key (falls vorhanden) oder Key in der Targets-Liste
             if ($element['name'] === 'LocalServerKey') $element['options'] = $serverOptions;
+
+            // --- NEU v1.7.4: Befüllen des zentralen Setup-Dropdowns ---
+            if ($element['name'] === 'SelectedTargetForSetup') $element['options'] = $setupOptions;
 
             if ($element['name'] === 'Targets') {
                 foreach ($element['columns'] as &$col) {
@@ -680,35 +688,61 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function OpenInstallationWizard(string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
+    public function OpenInstallationWizard(string $FolderName)
     {
-        $this->LogMessage("DEBUG: OpenInstallationWizard called for " . $FolderName, KL_MESSAGE);
+        // 1. Validierung: Wurde ein Server ausgewählt?
+        if ($FolderName === "") {
+            echo "Please select a server from the dropdown first.";
+            return;
+        }
+
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
         $localServerKey = $this->ReadPropertyString('LocalServerKey');
+        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?? [];
 
-        // Standardwerte /  Fallback aus der Tabelle
+        // 2. Die Daten für diesen Folder aus der Modul-Konfiguration suchen
+        $remoteKey = "";
+        $tableScriptRoot = 10000;
+        $tableSecretsID = 10000;
+        $found = false;
+
+        foreach ($targets as $t) {
+            if ($t['Name'] === $FolderName) {
+                $remoteKey = $t['RemoteKey'] ?? '';
+                $tableScriptRoot = (int)($t['RemoteScriptRootID'] ?? 10000);
+                $tableSecretsID = (int)($t['RemoteSecretsID'] ?? 10000);
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            echo "Configuration for '$FolderName' not found. Please save settings first.";
+            return;
+        }
+
+        // Standardwerte / Fallback (aus Tabelle)
         $data = [
             'User'         => '',
             'PW'           => '',
             'URL'          => '',
-            'ScriptRootID' => $TableScriptRoot,
-            'SecretsID'    => $TableSecretsID
+            'ScriptRootID' => $tableScriptRoot,
+            'SecretsID'    => $tableSecretsID
         ];
 
-        // 1. Daten aus dem SEC-Vault laden
-        if ($secID > 0 && $RemoteKey !== '' && IPS_InstanceExists($secID)) {
+        // 3. Daten aus dem SEC-Vault laden (Prefix_Suffix Konvention)
+        if ($secID > 0 && $remoteKey !== '' && IPS_InstanceExists($secID)) {
             try {
-                $json = @SEC_GetSecret($secID, $RemoteKey);
+                $json = @SEC_GetSecret($secID, $remoteKey);
                 if ($json) {
                     $vault = json_decode($json, true);
                     if (is_array($vault)) {
-                        // Globale Felder
                         if (isset($vault['User'])) $data['User'] = $vault['User'];
                         if (isset($vault['URL']))  $data['URL']  = $vault['URL'];
                         if (isset($vault['PW']))   $data['PW']   = $vault['PW'];
                         if (isset($vault['SecretsID'])) $data['SecretsID'] = (int)$vault['SecretsID'];
 
-                        // Systemspezifische Overlays (Prefix_Suffix Logik)
+                        // Systemspezifische Overlays
                         $specSecKey = 'SecretsID_' . $localServerKey;
                         if ($localServerKey !== '' && isset($vault[$specSecKey])) {
                             $data['SecretsID'] = (int)$vault[$specSecKey];
@@ -721,16 +755,16 @@ class RemoteSync extends IPSModule
                     }
                 }
             } catch (Exception $e) {
-                // Vault-Fehler -> Fallback auf Tabellenwerte
+                // Fallback auf Tabellenwerte
             }
         }
 
-        // 2. Das Popup-Formular erstellen
+        // 4. Das Popup-Formular erstellen
         $popup = [
             "type" => "Popup",
             "caption" => "Remote Setup Wizard: " . $FolderName,
             "items" => [
-                ["type" => "Label", "caption" => "System Ident: " . ($localServerKey ?: "None"), "bold" => true],
+                ["type" => "Label", "caption" => "System Ident (Suffix): " . ($localServerKey ?: "None"), "bold" => true],
                 ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $data['URL']],
                 ["type" => "ValidationTextBox", "name" => "WizUser", "caption" => "Username", "value" => $data['User']],
                 ["type" => "PasswordBox", "name" => "WizPW", "caption" => "Password", "value" => $data['PW']],
@@ -746,7 +780,8 @@ class RemoteSync extends IPSModule
             ]
         ];
 
-        $this->UpdateFormField("Targets", "popup", json_encode($popup));
+        // 5. Popup anzeigen (Anker ist jetzt der Button in RowLayout)
+        $this->UpdateFormField("WizardButton", "popup", json_encode($popup));
     }
 
     private function AddToBuffer($localID, $Value = null)
