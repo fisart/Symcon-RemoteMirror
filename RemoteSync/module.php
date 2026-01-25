@@ -685,7 +685,7 @@ class RemoteSync extends IPSModule
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
         $localServerKey = $this->ReadPropertyString('LocalServerKey');
 
-        // Standardwerte / Fallback aus der Tabelle
+        // Standardwerte /  Fallback aus der Tabelle
         $data = [
             'User'         => '',
             'PW'           => '',
