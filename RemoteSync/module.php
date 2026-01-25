@@ -630,7 +630,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function ExecuteWizardInstallation(int $InstanceID, string $FolderName, string $URL, string $User, string $PW, int $ScriptRoot, int $SecretsID)
+    public function ExecuteWizardInstallation(string $FolderName, string $URL, string $User, string $PW, int $ScriptRoot, int $SecretsID)
     {
         $connectionUrl = 'https://' . urlencode($User) . ":" . urlencode($PW) . "@" . $URL . "/api/";
         $tempRpc = new RemoteSync_RPCClient($connectionUrl);
@@ -680,7 +680,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function OpenInstallationWizard(int $InstanceID, string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
+    public function OpenInstallationWizard(string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
     {
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
         $localServerKey = $this->ReadPropertyString('LocalServerKey');
