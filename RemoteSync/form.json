@@ -41,7 +41,7 @@
                     "edit": { "type": "NumberSpinner", "minimum": 10000, "maximum": 99999 } 
                 },
                 { 
-                    "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", 
+                    "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", "add": "", 
                     "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_InstallRemoteScripts($id, $Name);" } 
                 }
             ]
