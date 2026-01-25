@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.4
+// Version 1.7.5
 
 class RemoteSync extends IPSModule
 {
@@ -690,12 +690,12 @@ class RemoteSync extends IPSModule
 
     public function OpenInstallationWizard(string $FolderName)
     {
+        // DEINE SONDE (beibehalten)
         $this->LogMessage("DEBUG WIZARD: Received FolderName is [" . $FolderName . "]", KL_MESSAGE);
 
-        // 1. Validierung: Falls Auswahl leer, Button deaktivieren
+        // 1. Validierung: Wurde ein Server ausgewählt?
         if ($FolderName === "") {
-            $this->UpdateFormField("WizardButton", "enabled", false);
-            $this->UpdateFormField("WizardButton", "caption", "🚀 Setup Wizard (Select Server first)");
+            echo "Please select a server from the dropdown first.";
             return;
         }
 
@@ -740,12 +740,21 @@ class RemoteSync extends IPSModule
                 if ($json) {
                     $vault = json_decode($json, true);
                     if (is_array($vault)) {
-                        if (isset($vault['User'])) $data['User'] = $vault['User'];
-                        if (isset($vault['URL']))  $data['URL']  = $vault['URL'];
-                        if (isset($vault['PW']))   $data['PW']   = $vault['PW'];
-                        if (isset($vault['SecretsID'])) $data['SecretsID'] = (int)$vault['SecretsID'];
+                        // Globale Felder
+                        if (isset($vault['User'])) {
+                            $data['User'] = $vault['User'];
+                        }
+                        if (isset($vault['URL'])) {
+                            $data['URL'] = $vault['URL'];
+                        }
+                        if (isset($vault['PW'])) {
+                            $data['PW'] = $vault['PW'];
+                        }
+                        if (isset($vault['SecretsID'])) {
+                            $data['SecretsID'] = (int)$vault['SecretsID'];
+                        }
 
-                        // Systemspezifische Overlays
+                        // Systemspezifische Overlays (Prefix_Suffix Logik)
                         $specSecKey = 'SecretsID_' . $localServerKey;
                         if ($localServerKey !== '' && isset($vault[$specSecKey])) {
                             $data['SecretsID'] = (int)$vault[$specSecKey];
@@ -762,8 +771,10 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // 4. Das Popup-Layout erstellen (Struktur für Button-Property "popup")
-        $popupLayout = [
+        // 4. Das Popup-Layout erstellen
+        $popup = [
+            "type" => "Popup",
+            "caption" => "Remote Setup Wizard: " . $FolderName,
             "items" => [
                 ["type" => "Label", "caption" => "System Ident (Suffix): " . ($localServerKey ?: "None"), "bold" => true],
                 ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $data['URL']],
@@ -781,10 +792,8 @@ class RemoteSync extends IPSModule
             ]
         ];
 
-        // 5. Den Button in der UI aktivieren und mit dem Popup-Layout laden
-        $this->UpdateFormField("WizardButton", "popup", json_encode($popupLayout));
-        $this->UpdateFormField("WizardButton", "enabled", true);
-        $this->UpdateFormField("WizardButton", "caption", "🚀 Open Setup Wizard for: " . $FolderName);
+        // 5. DAS POPUP ÖFFNEN (Stabilste Methode via echo)
+        echo json_encode($popup);
     }
 
     private function AddToBuffer($localID, $Value = null)
