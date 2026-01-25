@@ -45,18 +45,18 @@
         {
             "type": "RowLayout",
             "items": [
- {
-    "type": "Select",
-    "name": "SelectedTargetForSetup",
-    "caption": "Select Server to Setup",
-    "options": []
-},
-{ 
-    "type": "Button", 
-    "name": "WizardButton",
-    "caption": "🚀 Open Remote Setup Wizard", 
-    "onClick": "RS_OpenInstallationWizard($id, $SelectedTargetForSetup);" 
-}
+                {
+                    "type": "Select",
+                    "name": "SelectedTargetForSetup",
+                    "caption": "Select Server to Setup",
+                    "options": []
+                },
+                { 
+                    "type": "Button", 
+                    "name": "WizardButton",
+                    "caption": "🚀 Open Remote Setup Wizard", 
+                    "onClick": "RS_OpenInstallationWizard($id, $SelectedTargetForSetup);" 
+                }
             ]
         },
         { "type": "Label", "caption": "Step 2: Map Local Roots to Folders" },

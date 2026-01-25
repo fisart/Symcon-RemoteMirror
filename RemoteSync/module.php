@@ -690,7 +690,7 @@ class RemoteSync extends IPSModule
 
     public function OpenInstallationWizard(string $FolderName)
     {
-        // DEINE SONDE (beibehalten)
+        // Deine Debug-Sonde (beibehalten)
         $this->LogMessage("DEBUG WIZARD: Received FolderName is [" . $FolderName . "]", KL_MESSAGE);
 
         // 1. Validierung: Wurde ein Server ausgewählt?
@@ -736,42 +736,44 @@ class RemoteSync extends IPSModule
         // 3. Daten aus dem SEC-Vault laden (Prefix_Suffix Konvention)
         if ($secID > 0 && $remoteKey !== '' && IPS_InstanceExists($secID)) {
             try {
-                $json = @SEC_GetSecret($secID, $remoteKey);
-                if ($json) {
-                    $vault = json_decode($json, true);
-                    if (is_array($vault)) {
-                        // Globale Felder
-                        if (isset($vault['User'])) {
-                            $data['User'] = $vault['User'];
-                        }
-                        if (isset($vault['URL'])) {
-                            $data['URL'] = $vault['URL'];
-                        }
-                        if (isset($vault['PW'])) {
-                            $data['PW'] = $vault['PW'];
-                        }
-                        if (isset($vault['SecretsID'])) {
-                            $data['SecretsID'] = (int)$vault['SecretsID'];
-                        }
+                if (function_exists('SEC_GetSecret')) {
+                    $json = @SEC_GetSecret($secID, $remoteKey);
+                    if ($json) {
+                        $vault = json_decode($json, true);
+                        if (is_array($vault)) {
+                            // Globale Felder
+                            if (isset($vault['User'])) {
+                                $data['User'] = $vault['User'];
+                            }
+                            if (isset($vault['URL'])) {
+                                $data['URL'] = $vault['URL'];
+                            }
+                            if (isset($vault['PW'])) {
+                                $data['PW'] = $vault['PW'];
+                            }
+                            if (isset($vault['SecretsID'])) {
+                                $data['SecretsID'] = (int)$vault['SecretsID'];
+                            }
 
-                        // Systemspezifische Overlays (Prefix_Suffix Logik)
-                        $specSecKey = 'SecretsID_' . $localServerKey;
-                        if ($localServerKey !== '' && isset($vault[$specSecKey])) {
-                            $data['SecretsID'] = (int)$vault[$specSecKey];
-                        }
+                            // Systemspezifische Overlays (Prefix_Suffix Logik)
+                            $specSecKey = 'SecretsID_' . $localServerKey;
+                            if ($localServerKey !== '' && isset($vault[$specSecKey])) {
+                                $data['SecretsID'] = (int)$vault[$specSecKey];
+                            }
 
-                        $specRootKey = 'ScriptRootID_' . $localServerKey;
-                        if ($localServerKey !== '' && isset($vault[$specRootKey])) {
-                            $data['ScriptRootID'] = (int)$vault[$specRootKey];
+                            $specRootKey = 'ScriptRootID_' . $localServerKey;
+                            if ($localServerKey !== '' && isset($vault[$specRootKey])) {
+                                $data['ScriptRootID'] = (int)$vault[$specRootKey];
+                            }
                         }
                     }
                 }
             } catch (Exception $e) {
-                // Fallback auf Tabellenwerte
+                // Bei Fehlern bleiben wir bei den Standardwerten
             }
         }
 
-        // 4. Das Popup-Layout erstellen
+        // 4. Das Popup-Layout erstellen (Muss "type": "Popup" enthalten!)
         $popup = [
             "type" => "Popup",
             "caption" => "Remote Setup Wizard: " . $FolderName,
@@ -792,7 +794,8 @@ class RemoteSync extends IPSModule
             ]
         ];
 
-        // 5. DAS POPUP ÖFFNEN (Stabilste Methode via echo)
+        // 5. DAS FENSTER ÖFFNEN
+        // Durch echo json_encode wird das Fenster direkt als Reaktion auf den Klick gesendet.
         echo json_encode($popup);
     }
 
