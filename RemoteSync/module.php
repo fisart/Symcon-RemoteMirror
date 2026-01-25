@@ -80,13 +80,8 @@ class RemoteSync extends IPSModule
         $folderOptions = [['caption' => "Select Target Folder...", 'value' => ""]];
         foreach ($targets as $t) if (!empty($t['Name'])) $folderOptions[] = ['caption' => $t['Name'], 'value' => $t['Name']];
 
-        // --- NEU v1.7.4: Optionen für das zentrale Setup-Dropdown vorbereiten ---
-        $setupOptions = [['caption' => "Please select server...", 'value' => ""]];
-        foreach ($targets as $t) if (!empty($t['Name'])) $setupOptions[] = ['caption' => (string)$t['Name'], 'value' => (string)$t['Name']];
-
         // 3. Statische Elemente (Schritt 1 & 2) mit Dropdowns befüllen
-        // ÄNDERUNG: Übergabe des vierten Parameters $setupOptions
-        $this->UpdateStaticFormElements($form['elements'], $serverOptions, $folderOptions, $setupOptions);
+        $this->UpdateStaticFormElements($form['elements'], $serverOptions, $folderOptions);
 
         // 4. Cache-Mapping für schnellen Zugriff auf Checkbox-Zustände
         $stateCache = [];
@@ -190,6 +185,70 @@ class RemoteSync extends IPSModule
             ];
         }
 
+        // --- NEU v1.7.6: Dynamische Setup-Buttons im Aktionsbereich ---
+        $setupButtons = [];
+        $localKey = $this->ReadPropertyString('LocalServerKey');
+
+        foreach ($targets as $target) {
+            $fName = $target['Name'] ?? '';
+            $rKey  = $target['RemoteKey'] ?? '';
+            if ($fName === '') continue;
+
+            $wizData = [
+                'URL' => '',
+                'User' => '',
+                'PW' => '',
+                'Root' => (int)($target['RemoteScriptRootID'] ?? 10000),
+                'Sec' => (int)($target['RemoteSecretsID'] ?? 10000)
+            ];
+
+            if ($secID > 0 && $rKey !== '' && IPS_InstanceExists($secID)) {
+                $json = @SEC_GetSecret($secID, $rKey);
+                if ($json) {
+                    $vault = json_decode($json, true);
+                    if (is_array($vault)) {
+                        if (isset($vault['URL']))  $wizData['URL']  = $vault['URL'];
+                        if (isset($vault['User'])) $wizData['User'] = $vault['User'];
+                        if (isset($vault['PW']))   $wizData['PW']   = $vault['PW'];
+                        if (isset($vault['SecretsID'])) $wizData['Sec'] = (int)$vault['SecretsID'];
+                        if (isset($vault['ScriptRootID_' . $localKey])) $wizData['Root'] = (int)$vault['ScriptRootID_' . $localKey];
+                        if (isset($vault['SecretsID_' . $localKey]))    $wizData['Sec']  = (int)$vault['SecretsID_' . $localKey];
+                    }
+                }
+            }
+
+            $setupButtons[] = [
+                "type" => "Button",
+                "caption" => "Setup: " . $fName,
+                "popup" => [
+                    "caption" => "Remote Setup Wizard: " . $fName,
+                    "items" => [
+                        ["type" => "Label", "caption" => "Verify connection for " . $fName, "bold" => true],
+                        ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $wizData['URL']],
+                        ["type" => "ValidationTextBox", "name" => "WizUser", "caption" => "Username", "value" => $wizData['User']],
+                        ["type" => "PasswordBox", "name" => "WizPW", "caption" => "Password", "value" => $wizData['PW']],
+                        ["type" => "NumberSpinner", "name" => "WizScriptRoot", "caption" => "Script Root ID", "value" => $wizData['Root'], "minimum" => 10000, "maximum" => 99999],
+                        ["type" => "NumberSpinner", "name" => "WizSecretsID", "caption" => "Remote SEC ID", "value" => $wizData['Sec'], "minimum" => 10000, "maximum" => 99999]
+                    ],
+                    "actions" => [
+                        [
+                            "type" => "Button",
+                            "caption" => "🚀 START INSTALLATION",
+                            "onClick" => "RS_ExecuteWizardInstallation(\$id, '$fName', \$WizURL, \$WizUser, \$WizPW, \$WizScriptRoot, \$WizSecretsID);"
+                        ]
+                    ]
+                ]
+            ];
+        }
+
+        if (count($setupButtons) > 0) {
+            $form['actions'][] = [
+                "type" => "ExpansionPanel",
+                "caption" => "REMOTE INSTALLATION WIZARDS (Auto-filled from Vault)",
+                "items" => [["type" => "RowLayout", "items" => $setupButtons]]
+            ];
+        }
+
         // Globalen Footer wieder anhängen
         foreach ($staticFooter as $btn) {
             $form['actions'][] = $btn;
@@ -207,17 +266,15 @@ class RemoteSync extends IPSModule
 
 
     // Hilfsfunktion zum rekursiven Befüllen der statischen Formular-Elemente
-    private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions, $setupOptions): void
+    private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
     {
         foreach ($elements as &$element) {
-            if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions, $setupOptions);
+            // Rekursiver Aufruf mit den ursprünglichen 3 Parametern
+            if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions);
             if (!isset($element['name'])) continue;
 
             // Globaler Key (falls vorhanden) oder Key in der Targets-Liste
             if ($element['name'] === 'LocalServerKey') $element['options'] = $serverOptions;
-
-            // --- NEU v1.7.4: Befüllen des zentralen Setup-Dropdowns ---
-            if ($element['name'] === 'SelectedTargetForSetup') $element['options'] = $setupOptions;
 
             if ($element['name'] === 'Targets') {
                 foreach ($element['columns'] as &$col) {
@@ -688,116 +745,7 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function OpenInstallationWizard(string $FolderName)
-    {
-        // Deine Debug-Sonde (beibehalten)
-        $this->LogMessage("DEBUG WIZARD: Received FolderName is [" . $FolderName . "]", KL_MESSAGE);
 
-        // 1. Validierung: Wurde ein Server ausgewählt?
-        if ($FolderName === "") {
-            echo "Please select a server from the dropdown first.";
-            return;
-        }
-
-        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-        $localServerKey = $this->ReadPropertyString('LocalServerKey');
-        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?? [];
-
-        // 2. Die Daten für diesen Folder aus der Modul-Konfiguration suchen
-        $remoteKey = "";
-        $tableScriptRoot = 10000;
-        $tableSecretsID = 10000;
-        $found = false;
-
-        foreach ($targets as $t) {
-            if ($t['Name'] === $FolderName) {
-                $remoteKey = $t['RemoteKey'] ?? '';
-                $tableScriptRoot = (int)($t['RemoteScriptRootID'] ?? 10000);
-                $tableSecretsID = (int)($t['RemoteSecretsID'] ?? 10000);
-                $found = true;
-                break;
-            }
-        }
-
-        if (!$found) {
-            echo "Configuration for '$FolderName' not found. Please save settings first.";
-            return;
-        }
-
-        // Standardwerte / Fallback (aus Tabelle)
-        $data = [
-            'User'         => '',
-            'PW'           => '',
-            'URL'          => '',
-            'ScriptRootID' => $tableScriptRoot,
-            'SecretsID'    => $tableSecretsID
-        ];
-
-        // 3. Daten aus dem SEC-Vault laden (Prefix_Suffix Konvention)
-        if ($secID > 0 && $remoteKey !== '' && IPS_InstanceExists($secID)) {
-            try {
-                if (function_exists('SEC_GetSecret')) {
-                    $json = @SEC_GetSecret($secID, $remoteKey);
-                    if ($json) {
-                        $vault = json_decode($json, true);
-                        if (is_array($vault)) {
-                            // Globale Felder
-                            if (isset($vault['User'])) {
-                                $data['User'] = $vault['User'];
-                            }
-                            if (isset($vault['URL'])) {
-                                $data['URL'] = $vault['URL'];
-                            }
-                            if (isset($vault['PW'])) {
-                                $data['PW'] = $vault['PW'];
-                            }
-                            if (isset($vault['SecretsID'])) {
-                                $data['SecretsID'] = (int)$vault['SecretsID'];
-                            }
-
-                            // Systemspezifische Overlays (Prefix_Suffix Logik)
-                            $specSecKey = 'SecretsID_' . $localServerKey;
-                            if ($localServerKey !== '' && isset($vault[$specSecKey])) {
-                                $data['SecretsID'] = (int)$vault[$specSecKey];
-                            }
-
-                            $specRootKey = 'ScriptRootID_' . $localServerKey;
-                            if ($localServerKey !== '' && isset($vault[$specRootKey])) {
-                                $data['ScriptRootID'] = (int)$vault[$specRootKey];
-                            }
-                        }
-                    }
-                }
-            } catch (Exception $e) {
-                // Bei Fehlern bleiben wir bei den Standardwerten
-            }
-        }
-
-        // 4. Das Popup-Layout erstellen (Muss "type": "Popup" enthalten!)
-        $popup = [
-            "type" => "Popup",
-            "caption" => "Remote Setup Wizard: " . $FolderName,
-            "items" => [
-                ["type" => "Label", "caption" => "System Ident (Suffix): " . ($localServerKey ?: "None"), "bold" => true],
-                ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $data['URL']],
-                ["type" => "ValidationTextBox", "name" => "WizUser", "caption" => "Username", "value" => $data['User']],
-                ["type" => "PasswordBox", "name" => "WizPW", "caption" => "Password", "value" => $data['PW']],
-                ["type" => "NumberSpinner", "name" => "WizScriptRoot", "caption" => "Script Root ID", "value" => $data['ScriptRootID'], "minimum" => 10000, "maximum" => 99999],
-                ["type" => "NumberSpinner", "name" => "WizSecretsID", "caption" => "Remote SEC ID", "value" => $data['SecretsID'], "minimum" => 10000, "maximum" => 99999]
-            ],
-            "actions" => [
-                [
-                    "type" => "Button",
-                    "caption" => "🚀 START INSTALLATION",
-                    "onClick" => "RS_ExecuteWizardInstallation(\$id, '$FolderName', \$WizURL, \$WizUser, \$WizPW, \$WizScriptRoot, \$WizSecretsID);"
-                ]
-            ]
-        ];
-
-        // 5. DAS FENSTER ÖFFNEN
-        // Durch echo json_encode wird das Fenster direkt als Reaktion auf den Klick gesendet.
-        echo json_encode($popup);
-    }
 
     private function AddToBuffer($localID, $Value = null)
     {
