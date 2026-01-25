@@ -682,6 +682,7 @@ class RemoteSync extends IPSModule
 
     public function OpenInstallationWizard(string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
     {
+        $this->LogMessage("DEBUG: OpenInstallationWizard called for " . $FolderName, KL_MESSAGE);
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
         $localServerKey = $this->ReadPropertyString('LocalServerKey');
 
