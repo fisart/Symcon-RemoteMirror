@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.6.8
+// Version 1.6.9
 
 class RemoteSync extends IPSModule
 {
@@ -319,45 +319,63 @@ class RemoteSync extends IPSModule
 
     private function FindRemoteScript(int $parentID, string $ident): int
     {
-        // 1. VERSUCH: Suche über Ident (Best Practice #3)
+        // 1. ABSOLUTE SUCHE: Wer hat diesen Ident?
         try {
-            // IPS_GetObjectIDByIdent wirft via RPC eine Exception, wenn nichts gefunden wird.
-            // Wir fangen diese im catch-Block ab, um den Absturz zu verhindern.
             $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
             if ($id > 0) {
-                return $id;
+                // PRÜFUNG: Ist es wirklich ein Skript? (ObjectType 3)
+                $obj = $this->rpcClient->IPS_GetObject($id);
+                if ($obj['ObjectType'] == 3) {
+                    return $id;
+                } else {
+                    // Der Ident ist belegt, aber durch ein falsches Objekt!
+                    $this->Log("Critical Error: Ident '$ident' is already used by a non-script object (Type: " . $obj['ObjectType'] . "). Please delete it on remote system.", KL_ERROR);
+                    return 0;
+                }
             }
         } catch (Exception $e) {
-            // Ident nicht gefunden – kein Fehler, wir machen mit dem Fallback weiter.
+            // Nicht gefunden über Ident, wir machen weiter
         }
 
-        // 2. VERSUCH: Fallback auf Namen (Abwärtskompatibilität)
+        // 2. NAMENS-FALLBACK (Heilung alter Installationen)
         try {
             $oldName = ($ident === 'RS_Gateway') ? 'RemoteSync_Gateway' : 'RemoteSync_Receiver';
             $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
             if (is_array($children)) {
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
+                    // Hier prüfen wir ebenfalls auf ObjectType 3
                     if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $oldName) {
-                        // Skript über Namen gefunden! Jetzt Ident für die Zukunft setzen.
-                        $this->rpcClient->IPS_SetIdent($cID, $ident);
-                        return $cID;
+                        try {
+                            $this->rpcClient->IPS_SetIdent($cID, $ident);
+                            return $cID;
+                        } catch (Exception $eIdent) {
+                            $this->Log("Warning: Could not set Ident '$ident' on $cID. Error: " . $eIdent->getMessage(), KL_WARNING);
+                            return $cID;
+                        }
                     }
                 }
             }
         } catch (Exception $e) {
-            // Fehler beim Durchlaufen (z.B. ParentID existiert nicht)
+            // Fehler beim Durchlaufen der Kinder
         }
 
-        // 3. SCHRITT: Neuerstellung (falls weder Ident noch Name gefunden wurden)
+        // 3. NEUERSTELLUNG
         try {
             $id = $this->rpcClient->IPS_CreateScript(0);
             $this->rpcClient->IPS_SetParent($id, $parentID);
-            $this->rpcClient->IPS_SetIdent($id, $ident);
             $this->rpcClient->IPS_SetName($id, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
+
+            try {
+                $this->rpcClient->IPS_SetIdent($id, $ident);
+            } catch (Exception $eIdent) {
+                // Falls dieser Fehler hier auftritt, ist der Ident bereits auf dieser Ebene belegt
+                $this->Log("Critical: Cannot set Ident '$ident'. It is blocked by another object at this level.", KL_ERROR);
+            }
+
             return $id;
         } catch (Exception $e) {
-            $this->Log("FindRemoteScript Critical Error: " . $e->getMessage(), KL_ERROR);
+            $this->Log("FindRemoteScript Final Failure: " . $e->getMessage(), KL_ERROR);
             return 0;
         }
     }
