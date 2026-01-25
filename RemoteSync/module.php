@@ -690,6 +690,7 @@ class RemoteSync extends IPSModule
 
     public function OpenInstallationWizard(string $FolderName)
     {
+        $this->LogMessage("DEBUG WIZARD: Received FolderName is [" . $FolderName . "]", KL_MESSAGE);
         // 1. Validierung: Wurde ein Server ausgewählt?
         if ($FolderName === "") {
             echo "Please select a server from the dropdown first.";
