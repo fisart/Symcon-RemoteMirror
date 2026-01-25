@@ -635,19 +635,20 @@ class RemoteSync extends IPSModule
         $connectionUrl = 'https://' . urlencode($User) . ":" . urlencode($PW) . "@" . $URL . "/api/";
         $tempRpc = new RemoteSync_RPCClient($connectionUrl);
 
+        // Backup des aktuellen Clients
         $oldClient = $this->rpcClient;
         $this->rpcClient = $tempRpc;
 
         try {
-            // Installation durchführen (Ident-basiert)
+            // Installation durchführen (Nutzt die stabile FindRemoteScript v1.6.9)
             $gwID = $this->FindRemoteScript($ScriptRoot, "RS_Gateway");
-            if ($gwID === 0) throw new Exception("Could not create Gateway script.");
+            if ($gwID === 0) throw new Exception("Could not find or create Gateway script.");
 
             $gwCode = $this->GenerateGatewayCode($SecretsID);
             $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
 
             $rxID = $this->FindRemoteScript($ScriptRoot, "RS_Receiver");
-            if ($rxID === 0) throw new Exception("Could not create Receiver script.");
+            if ($rxID === 0) throw new Exception("Could not find or create Receiver script.");
 
             $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
 
@@ -669,11 +670,12 @@ class RemoteSync extends IPSModule
                 IPS_ApplyChanges($this->InstanceID);
             }
 
-            echo "Success: Remote setup completed and configuration saved.";
+            echo "Success: Remote setup completed and local configuration updated.";
         } catch (Exception $e) {
             $this->Log("Wizard Error: " . $e->getMessage(), KL_ERROR);
             echo "Error: " . $e->getMessage();
         } finally {
+            // rpcClient wiederherstellen
             $this->rpcClient = $oldClient;
         }
     }
@@ -681,9 +683,9 @@ class RemoteSync extends IPSModule
     public function OpenInstallationWizard(string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
     {
         $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-        $localServerKey = $this->ReadPropertyString('LocalServerKey'); // Der Suffix, z.B. "Hermitage"
+        $localServerKey = $this->ReadPropertyString('LocalServerKey');
 
-        // Standardwerte aus der Tabelle (Fallback)
+        // Standardwerte / Fallback aus der Tabelle
         $data = [
             'User'         => '',
             'PW'           => '',
@@ -699,21 +701,18 @@ class RemoteSync extends IPSModule
                 if ($json) {
                     $vault = json_decode($json, true);
                     if (is_array($vault)) {
-                        // Globale Felder (Hauptebene)
+                        // Globale Felder
                         if (isset($vault['User'])) $data['User'] = $vault['User'];
                         if (isset($vault['URL']))  $data['URL']  = $vault['URL'];
                         if (isset($vault['PW']))   $data['PW']   = $vault['PW'];
-
-                        // SecretsID: Erst global schauen...
                         if (isset($vault['SecretsID'])) $data['SecretsID'] = (int)$vault['SecretsID'];
 
-                        // ...dann systemspezifisch überschreiben (z.B. SecretsID_Hermitage)
+                        // Systemspezifische Overlays (Prefix_Suffix Logik)
                         $specSecKey = 'SecretsID_' . $localServerKey;
                         if ($localServerKey !== '' && isset($vault[$specSecKey])) {
                             $data['SecretsID'] = (int)$vault[$specSecKey];
                         }
 
-                        // ScriptRootID: Systemspezifisch (z.B. ScriptRootID_Hermitage)
                         $specRootKey = 'ScriptRootID_' . $localServerKey;
                         if ($localServerKey !== '' && isset($vault[$specRootKey])) {
                             $data['ScriptRootID'] = (int)$vault[$specRootKey];
@@ -721,7 +720,7 @@ class RemoteSync extends IPSModule
                     }
                 }
             } catch (Exception $e) {
-                // Fehler beim Lesen des Vaults -> wir bleiben bei den Standardwerten
+                // Vault-Fehler -> Fallback auf Tabellenwerte
             }
         }
 
