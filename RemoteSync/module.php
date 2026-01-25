@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.5
+// Version 1.7.0
 
 class RemoteSync extends IPSModule
 {
@@ -53,8 +53,6 @@ class RemoteSync extends IPSModule
     }
 
     // --- FORM & UI ---
-
-
     public function GetConfigurationForm()
     {
 
@@ -185,70 +183,6 @@ class RemoteSync extends IPSModule
             ];
         }
 
-        // --- NEU v1.7.6: Dynamische Setup-Buttons im Aktionsbereich ---
-        $setupButtons = [];
-        $localKey = $this->ReadPropertyString('LocalServerKey');
-
-        foreach ($targets as $target) {
-            $fName = $target['Name'] ?? '';
-            $rKey  = $target['RemoteKey'] ?? '';
-            if ($fName === '') continue;
-
-            $wizData = [
-                'URL' => '',
-                'User' => '',
-                'PW' => '',
-                'Root' => (int)($target['RemoteScriptRootID'] ?? 10000),
-                'Sec' => (int)($target['RemoteSecretsID'] ?? 10000)
-            ];
-
-            if ($secID > 0 && $rKey !== '' && IPS_InstanceExists($secID)) {
-                $json = @SEC_GetSecret($secID, $rKey);
-                if ($json) {
-                    $vault = json_decode($json, true);
-                    if (is_array($vault)) {
-                        if (isset($vault['URL']))  $wizData['URL']  = $vault['URL'];
-                        if (isset($vault['User'])) $wizData['User'] = $vault['User'];
-                        if (isset($vault['PW']))   $wizData['PW']   = $vault['PW'];
-                        if (isset($vault['SecretsID'])) $wizData['Sec'] = (int)$vault['SecretsID'];
-                        if (isset($vault['ScriptRootID_' . $localKey])) $wizData['Root'] = (int)$vault['ScriptRootID_' . $localKey];
-                        if (isset($vault['SecretsID_' . $localKey]))    $wizData['Sec']  = (int)$vault['SecretsID_' . $localKey];
-                    }
-                }
-            }
-
-            $setupButtons[] = [
-                "type" => "Button",
-                "caption" => "Setup: " . $fName,
-                "popup" => [
-                    "caption" => "Remote Setup Wizard: " . $fName,
-                    "items" => [
-                        ["type" => "Label", "caption" => "Verify connection for " . $fName, "bold" => true],
-                        ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $wizData['URL']],
-                        ["type" => "ValidationTextBox", "name" => "WizUser", "caption" => "Username", "value" => $wizData['User']],
-                        ["type" => "PasswordBox", "name" => "WizPW", "caption" => "Password", "value" => $wizData['PW']],
-                        ["type" => "NumberSpinner", "name" => "WizScriptRoot", "caption" => "Script Root ID", "value" => $wizData['Root'], "minimum" => 10000, "maximum" => 99999],
-                        ["type" => "NumberSpinner", "name" => "WizSecretsID", "caption" => "Remote SEC ID", "value" => $wizData['Sec'], "minimum" => 10000, "maximum" => 99999]
-                    ],
-                    "actions" => [
-                        [
-                            "type" => "Button",
-                            "caption" => "🚀 START INSTALLATION",
-                            "onClick" => "RS_ExecuteWizardInstallation(\$id, '$fName', \$WizURL, \$WizUser, \$WizPW, \$WizScriptRoot, \$WizSecretsID);"
-                        ]
-                    ]
-                ]
-            ];
-        }
-
-        if (count($setupButtons) > 0) {
-            $form['actions'][] = [
-                "type" => "ExpansionPanel",
-                "caption" => "REMOTE INSTALLATION WIZARDS (Auto-filled from Vault)",
-                "items" => [["type" => "RowLayout", "items" => $setupButtons]]
-            ];
-        }
-
         // Globalen Footer wieder anhängen
         foreach ($staticFooter as $btn) {
             $form['actions'][] = $btn;
@@ -256,6 +190,8 @@ class RemoteSync extends IPSModule
 
         return json_encode($form);
     }
+
+
 
     public function Destroy()
     {
@@ -269,7 +205,6 @@ class RemoteSync extends IPSModule
     private function UpdateStaticFormElements(&$elements, $serverOptions, $folderOptions): void
     {
         foreach ($elements as &$element) {
-            // Rekursiver Aufruf mit den ursprünglichen 3 Parametern
             if (isset($element['items'])) $this->UpdateStaticFormElements($element['items'], $serverOptions, $folderOptions);
             if (!isset($element['name'])) continue;
 
@@ -694,58 +629,6 @@ class RemoteSync extends IPSModule
             return false;
         }
     }
-
-    public function ExecuteWizardInstallation(string $FolderName, string $URL, string $User, string $PW, int $ScriptRoot, int $SecretsID)
-    {
-        $connectionUrl = 'https://' . urlencode($User) . ":" . urlencode($PW) . "@" . $URL . "/api/";
-        $tempRpc = new RemoteSync_RPCClient($connectionUrl);
-
-        // Backup des aktuellen Clients
-        $oldClient = $this->rpcClient;
-        $this->rpcClient = $tempRpc;
-
-        try {
-            // Installation durchführen (Nutzt die stabile FindRemoteScript v1.6.9)
-            $gwID = $this->FindRemoteScript($ScriptRoot, "RS_Gateway");
-            if ($gwID === 0) throw new Exception("Could not find or create Gateway script.");
-
-            $gwCode = $this->GenerateGatewayCode($SecretsID);
-            $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
-
-            $rxID = $this->FindRemoteScript($ScriptRoot, "RS_Receiver");
-            if ($rxID === 0) throw new Exception("Could not find or create Receiver script.");
-
-            $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
-
-            // IDs zurück in die lokale Property Targets schreiben
-            $targets = json_decode($this->ReadPropertyString("Targets"), true);
-            $updated = false;
-
-            foreach ($targets as &$t) {
-                if ($t['Name'] === $FolderName) {
-                    $t['RemoteScriptRootID'] = $ScriptRoot;
-                    $t['RemoteSecretsID']    = $SecretsID;
-                    $updated = true;
-                    break;
-                }
-            }
-
-            if ($updated) {
-                IPS_SetProperty($this->InstanceID, "Targets", json_encode($targets));
-                IPS_ApplyChanges($this->InstanceID);
-            }
-
-            echo "Success: Remote setup completed and local configuration updated.";
-        } catch (Exception $e) {
-            $this->Log("Wizard Error: " . $e->getMessage(), KL_ERROR);
-            echo "Error: " . $e->getMessage();
-        } finally {
-            // rpcClient wiederherstellen
-            $this->rpcClient = $oldClient;
-        }
-    }
-
-
 
     private function AddToBuffer($localID, $Value = null)
     {
