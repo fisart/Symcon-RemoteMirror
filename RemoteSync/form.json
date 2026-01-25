@@ -50,7 +50,6 @@
     "name": "SelectedTargetForSetup",
     "caption": "Select Server to Setup",
     "options": []
-    // onValueChange entfernt
 },
 { 
     "type": "Button", 
