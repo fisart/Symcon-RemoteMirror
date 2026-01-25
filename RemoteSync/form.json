@@ -49,14 +49,15 @@
                     "type": "Select",
                     "name": "SelectedTargetForSetup",
                     "caption": "Select Server to Setup",
-                    "options": []
+                    "options": [],
+                    "onValueChange": "RS_OpenInstallationWizard($id, $Value);"
                 },
                 { 
                     "type": "Button", 
                     "name": "WizardButton",
-                    "caption": "🚀 Start Remote Setup Wizard", 
-                    "onClick": "RS_OpenInstallationWizard($id, $SelectedTargetForSetup);",
-                    "popup": {}
+                    "caption": "🚀 Setup Wizard (Select Server first)", 
+                    "enabled": false,
+                    "popup": { "items": [], "actions": [] }
                 }
             ]
         },

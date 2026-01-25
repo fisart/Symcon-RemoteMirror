@@ -691,9 +691,11 @@ class RemoteSync extends IPSModule
     public function OpenInstallationWizard(string $FolderName)
     {
         $this->LogMessage("DEBUG WIZARD: Received FolderName is [" . $FolderName . "]", KL_MESSAGE);
-        // 1. Validierung: Wurde ein Server ausgewählt?
+
+        // 1. Validierung: Falls Auswahl leer, Button deaktivieren
         if ($FolderName === "") {
-            echo "Please select a server from the dropdown first.";
+            $this->UpdateFormField("WizardButton", "enabled", false);
+            $this->UpdateFormField("WizardButton", "caption", "🚀 Setup Wizard (Select Server first)");
             return;
         }
 
@@ -760,10 +762,8 @@ class RemoteSync extends IPSModule
             }
         }
 
-        // 4. Das Popup-Formular erstellen
-        $popup = [
-            "type" => "Popup",
-            "caption" => "Remote Setup Wizard: " . $FolderName,
+        // 4. Das Popup-Layout erstellen (Struktur für Button-Property "popup")
+        $popupLayout = [
             "items" => [
                 ["type" => "Label", "caption" => "System Ident (Suffix): " . ($localServerKey ?: "None"), "bold" => true],
                 ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL", "value" => $data['URL']],
@@ -781,8 +781,10 @@ class RemoteSync extends IPSModule
             ]
         ];
 
-        // 5. Popup anzeigen (Anker ist jetzt der Button in RowLayout)
-        $this->UpdateFormField("WizardButton", "popup", json_encode($popup));
+        // 5. Den Button in der UI aktivieren und mit dem Popup-Layout laden
+        $this->UpdateFormField("WizardButton", "popup", json_encode($popupLayout));
+        $this->UpdateFormField("WizardButton", "enabled", true);
+        $this->UpdateFormField("WizardButton", "caption", "🚀 Open Setup Wizard for: " . $FolderName);
     }
 
     private function AddToBuffer($localID, $Value = null)
