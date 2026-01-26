@@ -629,7 +629,124 @@ class RemoteSync extends IPSModule
             return false;
         }
     }
+    public function ExecuteWizardInstallation(string $FolderName, string $URL, string $User, string $PW, int $ScriptRoot, int $SecretsID)
+    {
+        // 1. Verbindung manuell mit den Wizard-Daten aufbauen
+        $connectionUrl = 'https://' . urlencode($User) . ":" . urlencode($PW) . "@" . $URL . "/api/";
 
+        // Wir nutzen eine temporäre Instanz des RPC-Clients für die Installation
+        $tempRpc = new RemoteSync_RPCClient($connectionUrl);
+
+        // Wir biegen den internen rpcClient kurzzeitig auf die Wizard-Verbindung um
+        $oldClient = $this->rpcClient;
+        $this->rpcClient = $tempRpc;
+
+        try {
+            // 2. Installation durchführen (Nutzt die robusten Idents aus v1.6.9)
+            $gwID = $this->FindRemoteScript($ScriptRoot, "RS_Gateway");
+            if ($gwID === 0) throw new Exception("Could not create Gateway script.");
+
+            $gwCode = $this->GenerateGatewayCode($SecretsID);
+            $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
+
+            $rxID = $this->FindRemoteScript($ScriptRoot, "RS_Receiver");
+            if ($rxID === 0) throw new Exception("Could not create Receiver script.");
+
+            $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
+
+            // 3. IDs zurück in die lokale Konfiguration schreiben
+            $targets = json_decode($this->ReadPropertyString("Targets"), true);
+            $updated = false;
+
+            foreach ($targets as &$t) {
+                if ($t['Name'] === $FolderName) {
+                    $t['RemoteScriptRootID'] = $ScriptRoot;
+                    $t['RemoteSecretsID']    = $SecretsID;
+                    $updated = true;
+                    break;
+                }
+            }
+
+            if ($updated) {
+                IPS_SetProperty($this->InstanceID, "Targets", json_encode($targets));
+                IPS_ApplyChanges($this->InstanceID);
+            }
+
+            echo "Success: Remote setup completed and local configuration updated.";
+        } catch (Exception $e) {
+            $this->Log("Wizard Install Error: " . $e->getMessage(), KL_ERROR);
+            echo "Error: " . $e->getMessage();
+        } finally {
+            // rpcClient wieder auf den Originalzustand zurücksetzen
+            $this->rpcClient = $oldClient;
+        }
+    }
+
+    public function OpenInstallationWizard(string $FolderName, string $RemoteKey, int $TableScriptRoot, int $TableSecretsID)
+    {
+        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
+        $localServerKey = $this->ReadPropertyString('LocalServerKey'); // z.B. "Hermitage"
+
+        // Standardwerte (aus der Tabelle)
+        $data = [
+            'User'         => '',
+            'PW'           => '',
+            'URL'          => '',
+            'ScriptRootID' => $TableScriptRoot,
+            'SecretsID'    => $TableSecretsID
+        ];
+
+        // 1. Daten aus dem SEC-Vault laden (falls vorhanden)
+        if ($secID > 0 && $RemoteKey !== '' && IPS_InstanceExists($secID)) {
+            try {
+                $json = @SEC_GetSecret($secID, $RemoteKey);
+                if ($json) {
+                    $vault = json_decode($json, true);
+                    if (is_array($vault)) {
+                        // Hauptebene
+                        if (isset($vault['User'])) $data['User'] = $vault['User'];
+                        if (isset($vault['URL']))  $data['URL']  = $vault['URL'];
+                        if (isset($vault['PW']))   $data['PW']   = $vault['PW'];
+                        if (isset($vault['SecretsID'])) $data['SecretsID'] = (int)$vault['SecretsID'];
+
+                        // Schachtelung: LocalServerKey Ebene (z.B. $vault['Hermitage'])
+                        if ($localServerKey !== '' && isset($vault[$localServerKey]) && is_array($vault[$localServerKey])) {
+                            $sub = $vault[$localServerKey];
+                            if (isset($sub['ScriptRootID'])) $data['ScriptRootID'] = (int)$sub['ScriptRootID'];
+                            if (isset($sub['SecretsID']))    $data['SecretsID']    = (int)$sub['SecretsID'];
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Vault nicht lesbar oder Fehler – wir nutzen die Standardwerte
+            }
+        }
+
+        // 2. Das Popup-Formular (JSON) erstellen
+        $popup = [
+            "type" => "Popup",
+            "caption" => "Remote Setup Wizard: " . $FolderName,
+            "items" => [
+                ["type" => "Label", "caption" => "Verify and complete the connection details for the remote server. Correct IDs will be saved back to your configuration.", "italic" => true],
+                ["type" => "ValidationTextBox", "name" => "WizURL", "caption" => "Remote URL (IP or Hostname)", "value" => $data['URL']],
+                ["type" => "ValidationTextBox", "name" => "WizUser", "caption" => "Username / Email", "value" => $data['User']],
+                ["type" => "PasswordBox", "name" => "WizPW", "caption" => "Password", "value" => $data['PW']],
+                ["type" => "NumberSpinner", "name" => "WizScriptRoot", "caption" => "Script Root ID", "value" => $data['ScriptRootID'], "minimum" => 10000, "maximum" => 99999],
+                ["type" => "NumberSpinner", "name" => "WizSecretsID", "caption" => "Remote SEC ID", "value" => $data['SecretsID'], "minimum" => 10000, "maximum" => 99999]
+            ],
+            "actions" => [
+                [
+                    "type" => "Button",
+                    "caption" => "🚀 START INSTALLATION",
+                    "onClick" => "RS_ExecuteWizardInstallation(\$id, '$FolderName', \$WizURL, \$WizUser, \$WizPW, \$WizScriptRoot, \$WizSecretsID);"
+                ]
+            ]
+        ];
+
+        // 3. Popup anzeigen
+        // Wir nutzen das 'Targets' Ident als Anker für das Popup
+        $this->UpdateFormField("Targets", "popup", json_encode($popup));
+    }
     private function AddToBuffer($localID, $Value = null)
     {
         if (IPS_GetKernelRunlevel() !== KR_READY || !$this->LoadConfig()) return;
