@@ -26,7 +26,6 @@
             "type": "List",
             "name": "Targets",
             "caption": "Remote Targets",
-            "popup": {}, 
             "rowCount": 5,
             "add": true,
             "delete": true,
@@ -43,7 +42,7 @@
                 },
                 { 
                     "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", "add": "", 
-                    "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_OpenInstallationWizard($id, $Name, $RemoteKey, $RemoteScriptRootID, $RemoteSecretsID);" } 
+                    "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_InstallRemoteScripts($id, $Name);" } 
                 }
             ]
         },
