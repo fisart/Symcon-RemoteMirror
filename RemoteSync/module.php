@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.0
+// Version 1.7.1
 
 class RemoteSync extends IPSModule
 {
@@ -338,15 +338,23 @@ class RemoteSync extends IPSModule
 
         // 2. NAMENS-FALLBACK (Heilung alter Installationen)
         try {
-            $oldName = ($ident === 'RS_Gateway') ? 'RemoteSync_Gateway' : 'RemoteSync_Receiver';
+            // KORREKTUR v1.7.7: Wir prüfen beide Varianten (Unterstrich und Leerzeichen),
+            // damit vorhandene Skripte unabhängig von der Schreibweise gefunden werden.
+            $possibleNames = ($ident === 'RS_Gateway')
+                ? ['RemoteSync_Gateway', 'RemoteSync Gateway']
+                : ['RemoteSync_Receiver', 'RemoteSync Receiver'];
+
             $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
             if (is_array($children)) {
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
-                    // Hier prüfen wir ebenfalls auf ObjectType 3
-                    if ($obj['ObjectType'] == 3 && $obj['ObjectName'] == $oldName) {
+
+                    if ($obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
                         try {
+                            // Gefunden! Jetzt Ident für die Zukunft setzen.
                             $this->rpcClient->IPS_SetIdent($cID, $ident);
+                            // Namen auf die Standard-Schreibweise (mit Leerzeichen) korrigieren
+                            $this->rpcClient->IPS_SetName($cID, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
                             return $cID;
                         } catch (Exception $eIdent) {
                             $this->Log("Warning: Could not set Ident '$ident' on $cID. Error: " . $eIdent->getMessage(), KL_WARNING);
