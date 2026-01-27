@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.1
+// Version 1.7.8
 
 class RemoteSync extends IPSModule
 {
@@ -328,7 +328,7 @@ class RemoteSync extends IPSModule
                     return $id;
                 } else {
                     // Der Ident ist belegt, aber durch ein falsches Objekt!
-                    $this->Log("Critical Error: Ident '$ident' is already used by a non-script object (Type: " . $obj['ObjectType'] . "). Please delete it on remote system.", KL_ERROR);
+                    $this->Log("Critical Error: Ident '$ident' is already used by a non-script object. Please delete it on remote system.", KL_ERROR);
                     return 0;
                 }
             }
@@ -338,8 +338,6 @@ class RemoteSync extends IPSModule
 
         // 2. NAMENS-FALLBACK (Heilung alter Installationen)
         try {
-            // KORREKTUR v1.7.7: Wir prüfen beide Varianten (Unterstrich und Leerzeichen),
-            // damit vorhandene Skripte unabhängig von der Schreibweise gefunden werden.
             $possibleNames = ($ident === 'RS_Gateway')
                 ? ['RemoteSync_Gateway', 'RemoteSync Gateway']
                 : ['RemoteSync_Receiver', 'RemoteSync Receiver'];
@@ -351,13 +349,11 @@ class RemoteSync extends IPSModule
 
                     if ($obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
                         try {
-                            // Gefunden! Jetzt Ident für die Zukunft setzen.
                             $this->rpcClient->IPS_SetIdent($cID, $ident);
-                            // Namen auf die Standard-Schreibweise (mit Leerzeichen) korrigieren
                             $this->rpcClient->IPS_SetName($cID, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
                             return $cID;
                         } catch (Exception $eIdent) {
-                            $this->Log("Warning: Could not set Ident '$ident' on $cID. Error: " . $eIdent->getMessage(), KL_WARNING);
+                            // Falls das Setzen des Idents hier scheitert, nutzen wir das Skript trotzdem
                             return $cID;
                         }
                     }
@@ -367,7 +363,7 @@ class RemoteSync extends IPSModule
             // Fehler beim Durchlaufen der Kinder
         }
 
-        // 3. NEUERSTELLUNG
+        // 3. NEUERSTELLUNG mit Sicherheitsbremse gegen leere Dubletten (v1.7.8)
         try {
             $id = $this->rpcClient->IPS_CreateScript(0);
             $this->rpcClient->IPS_SetParent($id, $parentID);
@@ -375,12 +371,18 @@ class RemoteSync extends IPSModule
 
             try {
                 $this->rpcClient->IPS_SetIdent($id, $ident);
+                return $id;
             } catch (Exception $eIdent) {
-                // Falls dieser Fehler hier auftritt, ist der Ident bereits auf dieser Ebene belegt
-                $this->Log("Critical: Cannot set Ident '$ident'. It is blocked by another object at this level.", KL_ERROR);
-            }
+                // --- KORREKTUR v1.7.8: Sicherheits-Löschung ---
+                // Der Ident ist blockiert. Wir löschen das neue leere Skript sofort wieder,
+                // damit keine Geister-Skripte ohne Inhalt entstehen.
+                $this->rpcClient->IPS_DeleteScript($id, true);
 
-            return $id;
+                // Letzter Versuch: Wir holen uns die ID des Objekts, das den Ident blockiert
+                $existingID = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
+                $this->Log("Notice: Ident '$ident' was blocked. Using existing object ID $existingID instead.", KL_MESSAGE);
+                return $existingID;
+            }
         } catch (Exception $e) {
             $this->Log("FindRemoteScript Final Failure: " . $e->getMessage(), KL_ERROR);
             return 0;
