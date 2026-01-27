@@ -412,8 +412,6 @@ class RemoteSync extends IPSModule
         // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
 
-
-
         $syncList = json_decode($syncListRaw, true) ?: [];
         $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
 
@@ -466,6 +464,11 @@ class RemoteSync extends IPSModule
             }
 
             if ($isActive && !$isDelete) {
+                // --- NEUE DEBUG SONDE FÜR ID 25458 ---
+                if ($vID == 25458) {
+                    $this->LogMessage("DEBUG_25458: ApplyChanges - RegisterMessage executed for variable 25458", KL_MESSAGE);
+                }
+                // -------------------------------------
                 $this->RegisterMessage($vID, VM_UPDATE);
                 $count++;
             }
@@ -536,6 +539,9 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
+        if ($SenderID == 25458) {
+            $this->LogMessage("DEBUG_25458: Message received in MessageSink", KL_MESSAGE);
+        }
         // Bei VM_UPDATE enthält $Data[0] den neuen Wert der Variable.
         // Wir übergeben diesen direkt an AddToBuffer, um Race Conditions zu vermeiden.
         $this->AddToBuffer($SenderID, $Data[0]);
@@ -645,6 +651,10 @@ class RemoteSync extends IPSModule
         if (IPS_GetKernelRunlevel() !== KR_READY || !$this->LoadConfig()) return;
 
         foreach ($this->config['SyncList'] as $item) {
+            if ($localID == 25458) {
+                // Wir loggen den Status, den das Modul aktuell im Speicher (Cache) hat
+                $this->LogMessage("DEBUG_25458: AddToBuffer triggered. Searching in SyncList Cache...", KL_MESSAGE);
+            }
             if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
 
                 $folderName = $item['Folder'] ?? 'Unknown';
