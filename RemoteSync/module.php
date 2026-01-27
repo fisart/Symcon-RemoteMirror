@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.8
+// Version 1.7.9
 
 class RemoteSync extends IPSModule
 {
@@ -1314,7 +1314,7 @@ class RemoteSync_RPCClient
     public function __call($method, $params)
     {
         $payload = json_encode(['jsonrpc' => '2.0', 'method' => $method, 'params' => $params, 'id' => time()]);
-        $opts = ['http' => ['method' => 'POST', 'header' => 'Content-Type: application/json', 'content' => $payload, 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+        $opts = ['http' => ['method' => 'POST', 'header' => 'Content-Type: application/json', 'content' => $payload, 'timeout' => 60], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
         $context = stream_context_create($opts);
         $result = file_get_contents($this->url, false, $context);
         // Die Prüfung 'if ($result === false)' existiert bereits im Code 
