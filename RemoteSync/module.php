@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.9
+// Version 1.7.91
 
 class RemoteSync extends IPSModule
 {
@@ -703,10 +703,22 @@ class RemoteSync extends IPSModule
                         SetValue($qVarID, count($currentState['buffer'][$folderName] ?? []));
                     }
 
-                    // 5. Worker-Start
-                    $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
-                    if (!IPS_RunScriptText($script)) {
-                        $this->Log("Critical Error: Worker thread for server '$folderName' could not be started. System might be overloaded.", KL_ERROR);
+                    // 5. Worker-Start (MODIFIZIERT v1.8.1: Pre-Flight Check gegen Thread-Sturm)
+                    $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash;
+
+                    // Wir prüfen, ob die Semaphore für diesen Server bereits belegt ist
+                    if (IPS_SemaphoreEnter($lockName, 0)) {
+                        // Wenn wir sie bekommen, läuft aktuell KEIN Worker. 
+                        // Wir geben sie sofort wieder frei und starten den Worker-Thread.
+                        IPS_SemaphoreLeave($lockName);
+
+                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
+                        if (!IPS_RunScriptText($script)) {
+                            $this->Log("Critical Error: Worker thread for server '$folderName' could not be started. System might be overloaded.", KL_ERROR);
+                        }
+                    } else {
+                        // Wenn wir sie nicht bekommen, arbeitet bereits ein Worker an diesem Bucket.
+                        // Wir verzichten auf den Start eines neuen Skripts (Ressourcenschonung).
                     }
                 }
             }
