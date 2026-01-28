@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.5
+// Version 1.8.7
 
 class RemoteSync extends IPSModule
 {
@@ -674,6 +674,14 @@ class RemoteSync extends IPSModule
 
                             // v1.6.2 Logik (Anti-Conflation)
                             $bufferKey = (string)$localID;
+
+                            // --- NEU v1.8.7: Zeitstempel-Schutz (Timestamp Preservation) ---
+                            // Falls die Variable schon im Puffer wartet, behalten wir den ursprünglichen 
+                            // Zeitstempel bei, um den realen Lag ab der ersten Änderung zu messen.
+                            if (isset($state['buffer'][$folderName][$bufferKey]['Timestamp'])) {
+                                $payload['Timestamp'] = $state['buffer'][$folderName][$bufferKey]['Timestamp'];
+                            }
+                            // ----------------------------------------------------------------
 
                             // 1. In den segmentierten Puffer schreiben
                             $state['buffer'][$folderName][$bufferKey] = $payload;
