@@ -604,6 +604,7 @@ class RemoteSync extends IPSModule
 
         return [
             'LocalID'      => $localID,
+            'Timestamp'    => microtime(true),
             'LocalSetID'   => $localRootID, // Identifikator für die Performance-Variable
             'RemoteRootID' => $remoteRootID, // Hilfswert für die Gruppierung
             'Folder'       => $folderName,   // Hilfswert
@@ -673,9 +674,6 @@ class RemoteSync extends IPSModule
 
                             // v1.6.2 Logik (Anti-Conflation)
                             $bufferKey = (string)$localID;
-                            if (!empty($item['FullHistory'])) {
-                                $bufferKey = $localID . '_' . microtime(true);
-                            }
 
                             // 1. In den segmentierten Puffer schreiben
                             $state['buffer'][$folderName][$bufferKey] = $payload;
@@ -1002,6 +1000,10 @@ class RemoteSync extends IPSModule
 
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
+
+                // Wir nehmen den Zeitstempel des ersten (ältesten) Items im Batch
+                $firstVarInBatch = reset($variables);
+                $firstEventTime = $firstVarInBatch['Timestamp'] ?? microtime(true);
 
                 $lag = round(microtime(true) - $firstEventTime, 2);
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
