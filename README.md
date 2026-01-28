@@ -1,3 +1,49 @@
+sequenceDiagram
+    participant V as Lokale Variable
+    participant MS as MessageSink (v1.6.3)
+    participant AB as AddToBuffer (v1.8.1)
+    participant ST as _SyncState (Attribut)
+    participant FB as FlushBuffer (Worker v1.8.2)
+    participant RPC as RPC-Client (60s Timeout)
+    participant REM as Remote Server
+
+    V->>MS: Wertänderung (Event)
+    MS->>AB: AddToBuffer(ID, Value) -- [Wert eingefroren]
+    
+    Note over AB: RS_StateLock (v1.6.4)
+    AB->>ST: Schreibe in Server-Bucket (Deduplizierung oder FullHistory)
+    Note over AB: Release StateLock
+    
+    Note over AB: Pre-Flight Check (v1.8.1)
+    AB->>AB: Prüfe RS_Lock_[Server]
+    
+    alt Semaphore frei
+        AB->>FB: Startet neuen Thread (IPS_RunScriptText)
+    else Semaphore belegt
+        AB->>AB: Beende (Daten warten im Bucket)
+    end
+
+    loop Chunking-Zyklus (v1.8.2)
+        FB->>FB: Einnimmt RS_Lock_[Server]
+        Note over FB: RS_StateLock
+        FB->>ST: Lese & Lösche max. 200 Items
+        Note over FB: Release StateLock
+        
+        FB->>RPC: Sende Batch-Paket
+        RPC->>REM: HTTPS POST (Timeout: 60s)
+        REM-->>RPC: Antwort (RTT ca. 800ms)
+        RPC-->>FB: Ergebnis zurück
+        
+        Note over FB: Berechne Performance (RTT, Lag, Size)
+        
+        FB->>ST: Yield-Check: Noch Daten im Bucket?
+        alt Bucket nicht leer
+            FB->>FB: Triggere nächsten Chunk
+        else Bucket leer
+            FB->>FB: Gebe RS_Lock_[Server] frei & Ende
+        end
+    end
+
 # Dokumentation: RemoteSync (RS) - Hochperformante System-Föderation
 
 ## 1. Einführung & Problemstellung
