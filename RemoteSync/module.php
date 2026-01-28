@@ -924,11 +924,11 @@ class RemoteSync extends IPSModule
                     $skipped = max(0, $eventCount - $totalItems);
                     $state['events'][$FolderName] = 0;
 
+                    // v1.8.8: Wir sichern den globalen Startzeitpunkt der Warteschlange
                     $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
 
                     // --- KORREKTUR v1.8.5: Ehrliche Lag-Messung ---
                     // Wir setzen den Zeitstempel NUR auf 0, wenn der Puffer jetzt wirklich LEER ist.
-                    // Falls noch Daten im Bucket sind, behalten wir den alten Zeitstempel bei.
                     if (count($state['buffer'][$FolderName]) === 0) {
                         $state['starts'][$FolderName] = 0;
                     }
@@ -1009,14 +1009,8 @@ class RemoteSync extends IPSModule
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
-                // Neu (v1.8.8 Logik: Globaler Queue-Lag):
-                // Wir laden den globalen Startzeitpunkt der gesamten Warteschlange aus dem State
-                $state = json_decode($this->ReadAttributeString('_SyncState'), true);
-                $globalStartTime = $state['starts'][$FolderName] ?? microtime(true);
-
-                $lag = round(microtime(true) - $globalStartTime, 2);
-
-
+                // KORREKTUR v1.8.8: Lag-Berechnung gegen den globalen Startzeitpunkt
+                $lag = round(microtime(true) - $firstEventTime, 2);
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
             }
