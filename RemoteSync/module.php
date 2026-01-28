@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.2
+// Version 1.8.3
 
 class RemoteSync extends IPSModule
 {
@@ -887,7 +887,7 @@ class RemoteSync extends IPSModule
             $firstEventTime = microtime(true);
 
             // --- NEU v1.8.2: Chunking-Parameter ---
-            $maxItemsPerBatch = 200;
+            $maxItemsPerBatch = 400;
             $totalInBucketBefore = 0;
 
             if (IPS_SemaphoreEnter($stateLock, 1000)) {
