@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.7
+// Version 1.8.8
 
 class RemoteSync extends IPSModule
 {
@@ -1009,11 +1009,14 @@ class RemoteSync extends IPSModule
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
-                // Wir nehmen den Zeitstempel des ersten (ältesten) Items im Batch
-                $firstVarInBatch = reset($variables);
-                $firstEventTime = $firstVarInBatch['Timestamp'] ?? microtime(true);
+                // Neu (v1.8.8 Logik: Globaler Queue-Lag):
+                // Wir laden den globalen Startzeitpunkt der gesamten Warteschlange aus dem State
+                $state = json_decode($this->ReadAttributeString('_SyncState'), true);
+                $globalStartTime = $state['starts'][$FolderName] ?? microtime(true);
 
-                $lag = round(microtime(true) - $firstEventTime, 2);
+                $lag = round(microtime(true) - $globalStartTime, 2);
+
+
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
             }
