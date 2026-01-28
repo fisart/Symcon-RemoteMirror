@@ -1,3 +1,92 @@
+Hier sind die aktualisierten Diagramme, die exakt den aktuellen Stand deines Moduls (**v1.8.2**) abbilden. Alle historischen Zwischenschritte wurden entfernt; dargestellt ist ausschließlich die jetzt aktive Logik.
+
+### 1. Datenfluss-Sequenz (Ereignis bis Remote-Server)
+Dieses Diagramm zeigt, wie eine Wertänderung die verschiedenen Schutzschichten (Locks) durchläuft.
+
+```mermaid
+sequenceDiagram
+    participant V as Lokale Variable
+    participant MOD as RemoteSync (Logic)
+    participant ST as _SyncState (Attribute)
+    participant FB as FlushBuffer (Worker)
+    participant REM as Remote Server
+
+    V->>MOD: Wertänderung (Event)
+    MOD->>MOD: Wert sofort einfrieren (Capture)
+    
+    rect rgb(240, 240, 240)
+        Note over MOD,ST: State-Lock (Atomarer Puffer-Zugriff)
+        MOD->>ST: Wert in Server-Bucket schreiben
+    end
+    
+    MOD->>MOD: Pre-Flight Check (Semaphore belegt?)
+    
+    alt Semaphore ist frei
+        MOD->>FB: Startet Worker-Skript
+    else Semaphore ist besetzt
+        MOD->>MOD: Beende Thread (Daten warten im Bucket)
+    end
+
+    loop Chunking-Zyklus
+        FB->>FB: Einnimmt Server-Semaphore (Lock)
+        rect rgb(240, 240, 240)
+            Note over FB,ST: State-Lock
+            FB->>ST: Entnehme max. 200 Items & Lösche diese im Puffer
+        end
+        
+        FB->>REM: RPC-Batch Send (Timeout 60s)
+        REM-->>FB: Antwort (OK / Error)
+        
+        FB->>MOD: Performance-Variablen aktualisieren
+        
+        FB->>ST: Yield-Check (Bucket leer?)
+        alt Bucket enthält noch Daten
+            FB->>FB: Starte nächsten Chunk sofort
+        else Bucket ist leer
+            FB->>FB: Gebe Semaphore frei & Beende Worker
+        end
+    end
+```
+
+### 2. Logik-Übersicht (Entscheidungsbaum)
+Dieses Diagramm zeigt die internen Prüfungen, die bei jeder Änderung ablaufen.
+
+```mermaid
+graph TD
+    A[Variable geändert] --> B[Wert capturen]
+    B --> C{State-Lock frei?}
+    C -->|Ja| D[In Server-Bucket schreiben]
+    D --> E[State-Lock freigeben]
+    E --> F{Server-Semaphore frei?}
+    
+    F -->|Ja| G[Worker Thread starten]
+    F -->|Nein| H[Thread beenden - Daten warten]
+    
+    G --> I[Server-Semaphore sperren]
+    I --> J[200 Items aus Bucket nehmen]
+    J --> K[RPC Versand - 60s Timeout]
+    K --> L[Metriken schreiben]
+    L --> M{Weitere Daten im Bucket?}
+    
+    M -->|Ja| J
+    M -->|Nein| N[Semaphore freigeben]
+    N --> O[IDLE / Ende]
+```
+
+### 3. Aktuelle System-Parameter (v1.8.2)
+
+Diese Werte steuern das Verhalten deines "Gold Masters" im Hintergrund:
+
+| Parameter | Aktueller Wert | Funktion |
+| :--- | :--- | :--- |
+| **Chunk-Limit** | **200 Items** | Maximale Anzahl Variablen pro Netzwerk-Paket. |
+| **RPC-Timeout** | **60 Sekunden** | Zeit, die ein Paket maximal zum Senden/Verarbeiten hat. |
+| **State-Lock** | 1000 ms | Zeit, die ein Thread wartet, um atomar auf den Puffer zuzugreifen. |
+| **Pre-Flight Check** | 0 ms | Verhindert den Start überflüssiger PHP-Skripte bei besetzter Leitung. |
+| **Ident-System** | `RS_Gateway` / `RS_Receiver` | Eindeutige Kennung der Skripte auf dem Remote-Server. |
+
+Du kannst diesen Mermaid-Code einfach in VS Code (mit Erweiterung) oder auf [mermaid.live](https://mermaid.live) kopieren, um ihn grafisch zu betrachten. Das System arbeitet jetzt wie eine **getaktete Pumpe**, die deine Daten in kontrollierten 200er-Häppchen durch die Leitung drückt.
+
 Dieses Diagramm verdeutlicht die Architektur der **Version 1.8.2** unter Berücksichtigung aller Optimierungen (Pre-Flight Check, Chunking, State-Locking und 60s Timeout).
 
 ### 1. Der Lebenszyklus einer Variablenänderung (Sequenzdiagramm)
