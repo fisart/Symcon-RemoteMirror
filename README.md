@@ -1,3 +1,10 @@
+Dieses Diagramm verdeutlicht die Architektur der **Version 1.8.2** unter Berücksichtigung aller Optimierungen (Pre-Flight Check, Chunking, State-Locking und 60s Timeout).
+
+### 1. Der Lebenszyklus einer Variablenänderung (Sequenzdiagramm)
+
+Dieses Diagramm zeigt den zeitlichen Ablauf vom Event bis zum Remote-System.
+
+```mermaid
 sequenceDiagram
     participant V as Lokale Variable
     participant MS as MessageSink (v1.6.3)
@@ -43,7 +50,45 @@ sequenceDiagram
             FB->>FB: Gebe RS_Lock_[Server] frei & Ende
         end
     end
+```
 
+---
+
+### 2. Zeit- und Kapazitäts-Parameter (Übersicht)
+
+Hier sind die kritischen Zeitwerte und Limits, die in v1.8.2 aktiv sind:
+
+| Komponente | Zeit / Limit | Zweck |
+| :--- | :--- | :--- |
+| **Value Capture** | Millisekunden | Verhindert Race Conditions (v1.6.3) |
+| **State-Lock** | Max. 1000ms Wartezeit | Garantiert atomares Lesen/Schreiben der Attribute (v1.6.4) |
+| **Pre-Flight Check** | 0ms (sofort) | Verhindert PHP-Thread-Sturm (v1.8.1) |
+| **Chunk Size** | **Max. 200 Items** | Verhindert Überlastung der Leitung & senkt den Lag (v1.8.2) |
+| **RPC Timeout** | **60 Sekunden** | Gibt langsamen Leitungen Zeit zur Übertragung (v1.7.9) |
+| **RTT (Deine Leitung)** | ~800ms - 1500ms | Physische Antwortzeit deiner Internetverbindung |
+| **Gefühlter Lag** | ca. 4 - 6 Sekunden | Zeit, bis ein Wert am Ziel ankommt (bei aktiver Pumpe) |
+
+---
+
+### 3. Logische Abhängigkeiten
+
+*   **Identität:** Das Modul findet Remote-Skripte über `RS_Gateway` / `RS_Receiver` (v1.7.8). Dies ist unabhängig vom Namen.
+*   **Hierarchie:** Die Variable muss ein Kind des in Schritt 2 definierten Roots sein (`IsChildOf`).
+*   **Integrität:** `AddToBuffer` schreibt nur, wenn `Active` in der `SyncList` (RAM-Cache) gesetzt ist.
+*   **Abhängigkeit der Locks:** 
+    *   Der **State-Lock** ist global pro Instanz (schützt das JSON-Attribut).
+    *   Der **Server-Lock (Semaphore)** ist spezifisch pro Folder (schützt die Netzwerkverbindung).
+
+### Zusammenfassung der Architektur v1.8.2
+Das System arbeitet nun als **sequentielles Fließband**:
+1.  Daten werden in Echtzeit in den Eimer (Bucket) geworfen.
+2.  Ein einziger Arbeiter (Worker) nimmt immer nur 200 Stück aus dem Eimer.
+3.  Er hat sehr viel Zeit (60s), um diese wegzubringen.
+4.  Sobald er zurückkommt, nimmt er sofort die nächsten 200 Stück.
+
+**Dieses Design verhindert den 4-Minuten-Stau, da der "Eimer" nun viel öfter und in handlichen Portionen geleert wird.**
+
+Bist du mit dieser Übersicht zufrieden, oder soll ich einen Teil des Diagramms noch detaillierter aufschlüsseln?
 # Dokumentation: RemoteSync (RS) - Hochperformante System-Föderation
 
 ## 1. Einführung & Problemstellung
