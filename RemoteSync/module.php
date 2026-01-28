@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.3
+// Version 1.8.4
 
 class RemoteSync extends IPSModule
 {
@@ -1340,21 +1340,59 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 class RemoteSync_RPCClient
 {
     private $url;
+
     public function __construct($url)
     {
         $this->url = $url;
     }
+
     public function __call($method, $params)
     {
-        $payload = json_encode(['jsonrpc' => '2.0', 'method' => $method, 'params' => $params, 'id' => time()]);
-        $opts = ['http' => ['method' => 'POST', 'header' => 'Content-Type: application/json', 'content' => $payload, 'timeout' => 60], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
-        $context = stream_context_create($opts);
-        $result = file_get_contents($this->url, false, $context);
-        // Die Prüfung 'if ($result === false)' existiert bereits im Code 
-        // und wirft nun eine Exception mit der originalen PHP-Fehlermeldung.
-        if ($result === false) throw new Exception("Connection failed");
+        $payload = json_encode([
+            'jsonrpc' => '2.0',
+            'method'  => $method,
+            'params'  => $params,
+            'id'      => time()
+        ]);
+
+        $ch = curl_init($this->url);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_BINARYTRANSFER => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Content-Length: ' . strlen($payload)
+            ],
+            // Best Practice: Timeout aus v1.7.9 beibehalten (60s)
+            CURLOPT_TIMEOUT        => 60,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            // SSL-Prüfung deaktiviert (wie im Gold Master v1.8.3)
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+            // Performance-Option: IPv4 erzwingen falls gewünscht (optional)
+            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4
+        ]);
+
+        $result = curl_exec($ch);
+        $error  = curl_error($ch);
+        $errno  = curl_errno($ch);
+
+        curl_close($ch);
+
+        // Fehlerprüfung gemäß Best Practice #2
+        if ($result === false) {
+            throw new Exception("cURL Error ($errno): $error");
+        }
+
         $response = json_decode($result, true);
-        if (isset($response['error'])) throw new Exception($response['error']['message']);
+
+        if (isset($response['error'])) {
+            throw new Exception($response['error']['message']);
+        }
+
         return $response['result'] ?? null;
     }
 }
