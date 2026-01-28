@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.4
+// Version 1.8.5
 
 class RemoteSync extends IPSModule
 {
@@ -919,7 +919,14 @@ class RemoteSync extends IPSModule
                     $state['events'][$FolderName] = 0;
 
                     $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
-                    $state['starts'][$FolderName] = 0;
+
+                    // --- KORREKTUR v1.8.5: Ehrliche Lag-Messung ---
+                    // Wir setzen den Zeitstempel NUR auf 0, wenn der Puffer jetzt wirklich LEER ist.
+                    // Falls noch Daten im Bucket sind, behalten wir den alten Zeitstempel bei.
+                    if (count($state['buffer'][$FolderName]) === 0) {
+                        $state['starts'][$FolderName] = 0;
+                    }
+                    // -----------------------------------------------
 
                     // Sofort zurückschreiben, damit der Puffer für andere Threads als "leer" gilt
                     $this->WriteAttributeString('_SyncState', json_encode($state));
