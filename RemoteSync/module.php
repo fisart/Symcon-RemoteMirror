@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.7.91
+// Version 1.8.2
 
 class RemoteSync extends IPSModule
 {
@@ -886,6 +886,10 @@ class RemoteSync extends IPSModule
             $skipped = 0;
             $firstEventTime = microtime(true);
 
+            // --- NEU v1.8.2: Chunking-Parameter ---
+            $maxItemsPerBatch = 200;
+            $totalInBucketBefore = 0;
+
             if (IPS_SemaphoreEnter($stateLock, 1000)) {
                 try {
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
@@ -896,11 +900,18 @@ class RemoteSync extends IPSModule
                         return;
                     }
 
-                    $variables = $state['buffer'][$FolderName];
+                    // --- CHIRURGISCHE ÄNDERUNG v1.8.2: Nur Teilmenge entnehmen ---
+                    $allVariables = $state['buffer'][$FolderName];
+                    $totalInBucketBefore = count($allVariables);
+
+                    $variables = array_slice($allVariables, 0, $maxItemsPerBatch, true);
                     $totalItems = count($variables);
 
-                    // Puffer-Segment leeren
-                    unset($state['buffer'][$FolderName]);
+                    // Wir löschen NUR die entnommenen Items aus dem Puffer-Segment
+                    foreach ($variables as $key => $val) {
+                        unset($state['buffer'][$FolderName][$key]);
+                    }
+                    // -------------------------------------------------------------
 
                     // Metriken Snapshots
                     $eventCount = $state['events'][$FolderName] ?? $totalItems;
@@ -926,7 +937,7 @@ class RemoteSync extends IPSModule
 
             // Queue Size Monitoring Reset
             $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-            if ($qVarID > 0) SetValue($qVarID, 0);
+            if ($qVarID > 0) SetValue($qVarID, $totalInBucketBefore - $totalItems);
 
             // Config-Abruf
             $firstVar = reset($variables);
@@ -962,7 +973,7 @@ class RemoteSync extends IPSModule
             }
 
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-            $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RemoteSync_Receiver");
+            $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RS_Receiver");
 
             if ($receiverID > 0 && $this->rpcClient) {
 
