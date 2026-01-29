@@ -556,7 +556,7 @@ class RemoteSync extends IPSModule
                 break;
         }
     }
-public function GetSyncState(): string
+    public function GetSyncState(): string
     {
         // Diese Brücke ist essenziell für das externe Audit-Skript
         return $this->ReadAttributeString('_SyncState');
@@ -1505,7 +1505,7 @@ class RemoteSync_RPCClient
         ]);
 
         $ch = curl_init($this->url);
-        
+
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_RETURNTRANSFER => true,
@@ -1517,16 +1517,16 @@ class RemoteSync_RPCClient
             ],
             CURLOPT_TIMEOUT        => 60,
             // KORREKTUR v1.9.9: Mehr Zeit für den Verbindungsaufbau bei hoher Last
-            CURLOPT_CONNECTTIMEOUT => 30, 
+            CURLOPT_CONNECTTIMEOUT => 30,
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => 0,
-            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4 
+            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4
         ]);
 
         $result = curl_exec($ch);
         $error  = curl_error($ch);
         $errno  = curl_errno($ch);
-        
+
         curl_close($ch);
 
         if ($result === false) {
@@ -1534,12 +1534,11 @@ class RemoteSync_RPCClient
         }
 
         $response = json_decode($result, true);
-        
+
         if (isset($response['error'])) {
             throw new Exception($response['error']['message']);
         }
 
         return $response['result'] ?? null;
     }
-}
 }
