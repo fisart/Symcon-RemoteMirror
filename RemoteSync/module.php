@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.9
+// Version 1.9.0
 
 class RemoteSync extends IPSModule
 {
@@ -25,6 +25,7 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyBoolean('DebugMode', false);
         $this->RegisterPropertyBoolean('AutoCreate', true);
         $this->RegisterPropertyBoolean('ReplicateProfiles', true);
+        $this->RegisterPropertyInteger('LaneCount', 3);
 
         $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
         $this->RegisterPropertyString('LocalServerKey', '');
@@ -651,6 +652,12 @@ class RemoteSync extends IPSModule
     {
         if (IPS_GetKernelRunlevel() !== KR_READY || !$this->LoadConfig()) return;
 
+        // --- NEU v1.9.0: Lane-Berechnung ---
+        $laneCount = $this->ReadPropertyInteger('LaneCount');
+        if ($laneCount < 1) $laneCount = 1;
+        $laneID = ($localID % $laneCount) + 1;
+        // -----------------------------------
+
         foreach ($this->config['SyncList'] as $item) {
             if ($localID == 25458) {
                 // Wir loggen den Status, den das Modul aktuell im Speicher (Cache) hat
@@ -676,22 +683,21 @@ class RemoteSync extends IPSModule
                             $bufferKey = (string)$localID;
 
                             // --- NEU v1.8.7: Zeitstempel-Schutz (Timestamp Preservation) ---
-                            // Falls die Variable schon im Puffer wartet, behalten wir den ursprünglichen 
-                            // Zeitstempel bei, um den realen Lag ab der ersten Änderung zu messen.
-                            if (isset($state['buffer'][$folderName][$bufferKey]['Timestamp'])) {
-                                $payload['Timestamp'] = $state['buffer'][$folderName][$bufferKey]['Timestamp'];
+                            // ÄNDERUNG v1.9.0: Pfad inkludiert jetzt die laneID
+                            if (isset($state['buffer'][$folderName][$laneID][$bufferKey]['Timestamp'])) {
+                                $payload['Timestamp'] = $state['buffer'][$folderName][$laneID][$bufferKey]['Timestamp'];
                             }
                             // ----------------------------------------------------------------
 
-                            // 1. In den segmentierten Puffer schreiben
-                            $state['buffer'][$folderName][$bufferKey] = $payload;
+                            // 1. In den segmentierten Puffer schreiben (Pfad inkl. LaneID)
+                            $state['buffer'][$folderName][$laneID][$bufferKey] = $payload;
 
-                            // 2. Update event counter
-                            $state['events'][$folderName] = ($state['events'][$folderName] ?? 0) + 1;
+                            // 2. Update event counter (Lane-spezifisch für präzise Metriken)
+                            $state['events'][$folderName][$laneID] = ($state['events'][$folderName][$laneID] ?? 0) + 1;
 
-                            // 3. Update processing lag start time
-                            if (!isset($state['starts'][$folderName]) || $state['starts'][$folderName] == 0) {
-                                $state['starts'][$folderName] = microtime(true);
+                            // 3. Update processing lag start time (Lane-spezifisch)
+                            if (!isset($state['starts'][$folderName][$laneID]) || $state['starts'][$folderName][$laneID] == 0) {
+                                $state['starts'][$folderName][$laneID] = microtime(true);
                             }
 
                             // Status zurückschreiben (NOCH INNERHALB DES LOCKS)
@@ -701,30 +707,34 @@ class RemoteSync extends IPSModule
                         }
                     }
 
-                    // 4. Update Queue Size Monitoring (Außerhalb des State-Locks)
-                    // Da wir das Attribut gerade geschrieben haben, lesen wir den Count neu
+                    // 4. Update Queue Size Monitoring (Summe über alle Lanes dieses Folders)
                     $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
                     if ($qVarID > 0) {
                         $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
-                        SetValue($qVarID, count($currentState['buffer'][$folderName] ?? []));
+                        $totalQueue = 0;
+                        if (isset($currentState['buffer'][$folderName])) {
+                            foreach ($currentState['buffer'][$folderName] as $laneData) {
+                                $totalQueue += count($laneData);
+                            }
+                        }
+                        SetValue($qVarID, $totalQueue);
                     }
 
-                    // 5. Worker-Start (MODIFIZIERT v1.8.1: Pre-Flight Check gegen Thread-Sturm)
-                    $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash;
+                    // 5. Worker-Start (MODIFIZIERT v1.9.0: Lane-spezifischer Pre-Flight Check)
+                    // Der Lock-Name enthält nun die LaneID
+                    $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $laneID;
 
-                    // Wir prüfen, ob die Semaphore für diesen Server bereits belegt ist
+                    // Wir prüfen, ob die Semaphore für DIESE Lane bereits belegt ist
                     if (IPS_SemaphoreEnter($lockName, 0)) {
-                        // Wenn wir sie bekommen, läuft aktuell KEIN Worker. 
-                        // Wir geben sie sofort wieder frei und starten den Worker-Thread.
                         IPS_SemaphoreLeave($lockName);
 
-                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "');";
+                        // Übergabe der LaneID an den Worker
+                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "', " . $laneID . ");";
                         if (!IPS_RunScriptText($script)) {
-                            $this->Log("Critical Error: Worker thread for server '$folderName' could not be started. System might be overloaded.", KL_ERROR);
+                            $this->Log("Critical Error: Worker thread for server '$folderName' Lane $laneID could not be started.", KL_ERROR);
                         }
                     } else {
-                        // Wenn wir sie nicht bekommen, arbeitet bereits ein Worker an diesem Bucket.
-                        // Wir verzichten auf den Start eines neuen Skripts (Ressourcenschonung).
+                        // Lane ist belegt -> Bestehender Worker übernimmt die Daten später
                     }
                 }
             }
@@ -870,14 +880,15 @@ class RemoteSync extends IPSModule
         }
     }
 
-    public function FlushBuffer(string $FolderName = "")
+    public function FlushBuffer(string $FolderName = "", int $LaneID = 1)
     {
         if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
             return;
         }
 
         $folderHash = md5($FolderName);
-        $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash;
+        // ÄNDERUNG v1.9.0: Semaphore ist nun Lane-spezifisch
+        $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $LaneID;
         $short = substr($folderHash, 0, 20);
 
         if (!IPS_SemaphoreEnter($lockName, 0)) {
@@ -888,69 +899,74 @@ class RemoteSync extends IPSModule
             // --- NEU v1.6.4: State-Lock für atomares Auslesen und Leeren des Puffers ---
             $stateLock = "RS_StateLock_" . $this->InstanceID;
             $variables = [];
-            $totalItems = 0;
+            $totalInBucketBefore = 0;
             $skipped = 0;
             $firstEventTime = microtime(true);
 
             // --- NEU v1.8.2: Chunking-Parameter ---
             $maxItemsPerBatch = 400;
-            $totalInBucketBefore = 0;
 
             if (IPS_SemaphoreEnter($stateLock, 1000)) {
                 try {
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    if (!isset($state['buffer'][$FolderName]) || count($state['buffer'][$FolderName]) === 0) {
+                    // ÄNDERUNG v1.9.0: Zugriff auf das Lane-spezifische Segment
+                    if (!isset($state['buffer'][$FolderName][$LaneID]) || count($state['buffer'][$FolderName][$LaneID]) === 0) {
                         IPS_SemaphoreLeave($stateLock);
                         IPS_SemaphoreLeave($lockName);
                         return;
                     }
 
-                    // --- CHIRURGISCHE ÄNDERUNG v1.8.2: Nur Teilmenge entnehmen ---
-                    $allVariables = $state['buffer'][$FolderName];
+                    // --- CHIRURGISCHE ÄNDERUNG v1.8.2/1.9.0: Nur Teilmenge der Lane entnehmen ---
+                    $allVariables = $state['buffer'][$FolderName][$LaneID];
                     $totalInBucketBefore = count($allVariables);
 
                     $variables = array_slice($allVariables, 0, $maxItemsPerBatch, true);
                     $totalItems = count($variables);
 
-                    // Wir löschen NUR die entnommenen Items aus dem Puffer-Segment
+                    // Wir löschen NUR die entnommenen Items aus dem Puffer-Segment der Lane
                     foreach ($variables as $key => $val) {
-                        unset($state['buffer'][$FolderName][$key]);
+                        unset($state['buffer'][$FolderName][$LaneID][$key]);
                     }
                     // -------------------------------------------------------------
 
-                    // Metriken Snapshots
-                    $eventCount = $state['events'][$FolderName] ?? $totalItems;
+                    // Metriken Snapshots (Lane-spezifisch)
+                    $eventCount = $state['events'][$FolderName][$LaneID] ?? $totalItems;
                     $skipped = max(0, $eventCount - $totalItems);
-                    $state['events'][$FolderName] = 0;
+                    $state['events'][$FolderName][$LaneID] = 0;
 
-                    // v1.8.8: Wir sichern den globalen Startzeitpunkt der Warteschlange
-                    $firstEventTime = $state['starts'][$FolderName] ?? microtime(true);
+                    // v1.8.8: Wir sichern den globalen Startzeitpunkt der Warteschlange dieser Lane
+                    $firstEventTime = $state['starts'][$FolderName][$LaneID] ?? microtime(true);
 
-                    // --- KORREKTUR v1.8.5: Ehrliche Lag-Messung ---
-                    // Wir setzen den Zeitstempel NUR auf 0, wenn der Puffer jetzt wirklich LEER ist.
-                    if (count($state['buffer'][$FolderName]) === 0) {
-                        $state['starts'][$FolderName] = 0;
+                    // --- KORREKTUR v1.8.5: Ehrliche Lag-Messung pro Lane ---
+                    if (count($state['buffer'][$FolderName][$LaneID]) === 0) {
+                        $state['starts'][$FolderName][$LaneID] = 0;
                     }
                     // -----------------------------------------------
 
-                    // Sofort zurückschreiben, damit der Puffer für andere Threads als "leer" gilt
+                    // Sofort zurückschreiben
                     $this->WriteAttributeString('_SyncState', json_encode($state));
                 } finally {
                     IPS_SemaphoreLeave($stateLock);
                 }
             } else {
-                // Falls der State-Lock nicht zu bekommen ist
                 throw new Exception("State-Lock timeout in FlushBuffer");
             }
 
-            // --- AB HIER: Verarbeitung der extrahierten $variables (außerhalb des State-Locks) ---
+            // --- AB HIER: Verarbeitung der extrahierten $variables ---
 
-            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Total items in this server-batch for $FolderName: $totalItems", KL_MESSAGE);
+            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items in this server-batch (Lane $LaneID) for $FolderName: $totalItems", KL_MESSAGE);
 
-            // Queue Size Monitoring Reset
+            // Queue Size Monitoring (Wir zeigen hier weiterhin die Summe aller Lanes zur Übersicht)
             $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-            if ($qVarID > 0) SetValue($qVarID, $totalInBucketBefore - $totalItems);
+            if ($qVarID > 0) {
+                $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
+                $totalQueue = 0;
+                if (isset($currentState['buffer'][$FolderName])) {
+                    foreach ($currentState['buffer'][$FolderName] as $laneData) $totalQueue += count($laneData);
+                }
+                SetValue($qVarID, $totalQueue);
+            }
 
             // Config-Abruf
             $firstVar = reset($variables);
@@ -960,7 +976,6 @@ class RemoteSync extends IPSModule
                 $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $FolderName . " failed.", KL_ERROR);
                 return;
             }
-
 
             $batch = array_values($variables);
             $profiles = [];
@@ -991,9 +1006,8 @@ class RemoteSync extends IPSModule
             if ($receiverID > 0 && $this->rpcClient) {
 
                 $startTime = microtime(true);
-                // Der Aufruf erfolgt nun ohne Unterdrückung. 
-                // Fehler werden durch den catch-Block weiter unten sauber abgefangen und geloggt.
-                $result = $this->rpcClient->IPS_RunScriptEx($receiverID, ['DATA' => $jsonPacket]);
+                // KORREKTUR v1.9.0: Zurück zu RunScriptWaitEx für RTT/Error Messung
+                $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
                 // Performance Updates
@@ -1009,25 +1023,23 @@ class RemoteSync extends IPSModule
                 $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
                 if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
 
-                // KORREKTUR v1.8.8: Lag-Berechnung gegen den globalen Startzeitpunkt
+                // Lag-Berechnung gegen den globalen Startzeitpunkt der Lane
                 $lag = round(microtime(true) - $firstEventTime, 2);
                 $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
                 if ($lagVarID > 0) SetValue($lagVarID, $lag);
             }
         } catch (Exception $e) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer Exception: " . $e->getMessage(), KL_ERROR);
+            $this->Log("[BUFFER-CHECK] FlushBuffer Exception Lane $LaneID: " . $e->getMessage(), KL_ERROR);
             $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
             if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
         } finally {
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check (Atomarer Check am Ende)
+            // Yield-Check (v1.9.0: Prüft gezielt die eigene Lane und reicht die LaneID weiter)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
-            if (isset($checkState['buffer'][$FolderName]) && count($checkState['buffer'][$FolderName]) > 0) {
-                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "');";
+            if (isset($checkState['buffer'][$FolderName][$LaneID]) && count($checkState['buffer'][$FolderName][$LaneID]) > 0) {
+                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "', " . $LaneID . ");";
                 @IPS_RunScriptText($script);
-            } else {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: FINISHED for $FolderName. No more data pending.", KL_MESSAGE);
             }
         }
     }
