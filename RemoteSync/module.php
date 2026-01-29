@@ -556,11 +556,7 @@ class RemoteSync extends IPSModule
                 break;
         }
     }
-    public function GetSyncState(): string
-    {
-        // Diese Brücke ist essenziell für das externe Audit-Skript
-        return $this->ReadAttributeString('_SyncState');
-    }
+
 
 
     public function SaveSelections()
