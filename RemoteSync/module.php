@@ -1480,7 +1480,7 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 class RemoteSync_RPCClient
 {
     private $url;
-    private $url;
+
 
     public function __construct($url)
     {
