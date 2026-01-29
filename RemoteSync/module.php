@@ -12,6 +12,7 @@ class RemoteSync extends IPSModule
     private $buffer = [];
     // We rely on attribute locking for state management
     private $isSending = false;
+    private $remoteScriptCache = []; // NEU v1.9.7: RAM-Cache für Remote-IDs
 
     public function Create()
     {
@@ -1039,7 +1040,13 @@ class RemoteSync extends IPSModule
 
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
             // ÄNDERUNG v1.9.4: Wir suchen nur noch (Read-Only), wir erstellen hier niemals neue Skripte!
-            $receiverID = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
+            // --- NEU v1.9.7: ID-Caching Logik ---
+            $cacheKey = $FolderName . '_RX';
+            if (!isset($this->remoteScriptCache[$cacheKey]) || $this->remoteScriptCache[$cacheKey] === 0) {
+                $this->remoteScriptCache[$cacheKey] = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
+            }
+            $receiverID = $this->remoteScriptCache[$cacheKey];
+            // ------------------------------------
 
             // Falls das Skript fehlt, geben wir einen Hinweis aus
             if ($receiverID === 0) {
