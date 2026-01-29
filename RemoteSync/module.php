@@ -1482,6 +1482,15 @@ class RemoteSync_RPCClient
         $this->url = $url;
     }
 
+class RemoteSync_RPCClient
+{
+    private $url;
+
+    public function __construct($url)
+    {
+        $this->url = $url;
+    }
+
     public function __call($method, $params)
     {
         $payload = json_encode([
@@ -1492,7 +1501,7 @@ class RemoteSync_RPCClient
         ]);
 
         $ch = curl_init($this->url);
-
+        
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_RETURNTRANSFER => true,
@@ -1502,33 +1511,31 @@ class RemoteSync_RPCClient
                 'Content-Type: application/json',
                 'Content-Length: ' . strlen($payload)
             ],
-            // Best Practice: Timeout aus v1.7.9 beibehalten (60s)
             CURLOPT_TIMEOUT        => 60,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            // SSL-Prüfung deaktiviert (wie im Gold Master v1.8.3)
+            // KORREKTUR v1.9.9: Mehr Zeit für den Verbindungsaufbau bei hoher Last
+            CURLOPT_CONNECTTIMEOUT => 30, 
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => 0,
-            // Performance-Option: IPv4 erzwingen falls gewünscht (optional)
-            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4
+            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4 
         ]);
 
         $result = curl_exec($ch);
         $error  = curl_error($ch);
         $errno  = curl_errno($ch);
-
+        
         curl_close($ch);
 
-        // Fehlerprüfung gemäß Best Practice #2
         if ($result === false) {
             throw new Exception("cURL Error ($errno): $error");
         }
 
         $response = json_decode($result, true);
-
+        
         if (isset($response['error'])) {
             throw new Exception($response['error']['message']);
         }
 
         return $response['result'] ?? null;
     }
+}
 }
