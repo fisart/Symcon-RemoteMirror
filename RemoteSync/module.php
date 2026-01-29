@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.9.0
+// Version 1.9.1
 
 class RemoteSync extends IPSModule
 {
@@ -678,6 +678,17 @@ class RemoteSync extends IPSModule
                     if (IPS_SemaphoreEnter($stateLock, 1000)) {
                         try {
                             $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+                            // --- NEU v1.9.1: Automatische Struktur-Migration (Fix für Fatal Error) ---
+                            if (isset($state['buffer'][$folderName]) && !empty($state['buffer'][$folderName])) {
+                                $firstElement = reset($state['buffer'][$folderName]);
+                                // Wenn das erste Element das Feld 'LocalID' hat, ist es noch das v1.8 Format
+                                if (is_array($firstElement) && isset($firstElement['LocalID'])) {
+                                    $state['buffer'][$folderName] = []; // Puffer für diesen Folder leeren
+                                    $state['events'][$folderName] = []; // Events für diesen Folder leeren
+                                    $state['starts'][$folderName] = []; // Zeitstempel für diesen Folder leeren
+                                }
+                            }
+                            // --------------------------------------------------------------------------
 
                             // v1.6.2 Logik (Anti-Conflation)
                             $bufferKey = (string)$localID;
