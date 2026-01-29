@@ -1098,7 +1098,10 @@ class RemoteSync extends IPSModule
             $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
             if ($id > 0) {
                 $obj = $this->rpcClient->IPS_GetObject($id);
-                if ($obj['ObjectType'] == 3) return $id;
+                // KORREKTUR v1.9.6: Check auf Array-Validität (Offset-Fix)
+                if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3) {
+                    return $id;
+                }
             }
         } catch (Exception $e) {
         }
@@ -1113,7 +1116,8 @@ class RemoteSync extends IPSModule
             if (is_array($children)) {
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
-                    if ($obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
+                    // KORREKTUR v1.9.6: Check auf Array-Validität (Offset-Fix)
+                    if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
                         return $cID;
                     }
                 }
