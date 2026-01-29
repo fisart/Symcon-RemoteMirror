@@ -562,7 +562,7 @@ public function GetSyncState(): string
         return $this->ReadAttributeString('_SyncState');
     }
 
-    
+
     public function SaveSelections()
     {
         // Wir triggern nur noch ApplyChanges, um die Nachrichten-Registrierung zu aktualisieren.
@@ -1479,19 +1479,17 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
 
 
+
+
 class RemoteSync_RPCClient
 {
+    private $url;
     private $url;
 
     public function __construct($url)
     {
         $this->url = $url;
     }
-
-class RemoteSync_RPCClient
-{
-    private $url;
-
     public function __construct($url)
     {
         $this->url = $url;
