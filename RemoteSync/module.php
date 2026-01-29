@@ -718,7 +718,16 @@ class RemoteSync extends IPSModule
                                 }
                             }
                             // --------------------------------------------------------------------------
-
+                            // --- STRUKTUR-MIGRATION v1.9.9 (Fix for Scalar Error) ---
+                            if (isset($state['buffer'][$folderName]) && !empty($state['buffer'][$folderName])) {
+                                $firstElement = reset($state['buffer'][$folderName]);
+                                // Wenn das erste Element 'LocalID' enthält, ist es noch das alte v1.8 Format
+                                if (is_array($firstElement) && isset($firstElement['LocalID'])) {
+                                    $state['buffer'][$folderName] = []; // Puffer für diesen Server leeren
+                                    $state['events'][$folderName] = []; // Events leeren
+                                    $state['starts'][$folderName] = []; // Zeitstempel leeren
+                                }
+                            }
                             // v1.6.2 Logik (Anti-Conflation)
                             $bufferKey = (string)$localID;
 
