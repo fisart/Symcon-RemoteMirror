@@ -1486,10 +1486,6 @@ class RemoteSync_RPCClient
     {
         $this->url = $url;
     }
-    public function __construct($url)
-    {
-        $this->url = $url;
-    }
 
     public function __call($method, $params)
     {
