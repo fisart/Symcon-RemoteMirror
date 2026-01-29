@@ -1330,14 +1330,27 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
     private function GetRecursiveVariables($parentID, &$result)
     {
+        // KORREKTUR v1.9.2: Sicherheitscheck, ob das Objekt existiert
+        if (!IPS_ObjectExists($parentID)) {
+            return;
+        }
+
         $children = IPS_GetChildrenIDs($parentID);
+
+        // KORREKTUR v1.9.2: Sicherstellen, dass wir ein Array erhalten
+        if (!is_array($children)) {
+            return;
+        }
+
         foreach ($children as $childID) {
-            $obj = IPS_GetObject($childID);
-            if ($obj['ObjectType'] == 2) {
-                $result[] = $childID;
-            }
-            if ($obj['HasChildren']) {
-                $this->GetRecursiveVariables($childID, $result);
+            $obj = @IPS_GetObject($childID);
+            if ($obj !== false) {
+                if ($obj['ObjectType'] == 2) {
+                    $result[] = $childID;
+                }
+                if ($obj['HasChildren']) {
+                    $this->GetRecursiveVariables($childID, $result);
+                }
             }
         }
     }
