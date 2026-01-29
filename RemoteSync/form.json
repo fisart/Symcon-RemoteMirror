@@ -7,7 +7,7 @@
                 { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode (Verbose Log)" },
                 { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
                 { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
-                { "type": "NumberSpinner", "name": "LaneCount", "caption": "Parallel Lanes per Server", "minimum": 1, "maximum": 5 },
+                { "type": "NumberSpinner", "name": "LaneCount", "caption": "Parallel Lanes per Server", "minimum": 1, "maximum": 10 },
                 {
                     "type": "SelectInstance",
                     "name": "LocalPasswordModuleID",
