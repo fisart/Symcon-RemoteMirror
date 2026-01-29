@@ -853,6 +853,13 @@ class RemoteSync extends IPSModule
         }
         echo "Successfully installed performance variables for $count servers.";
     }
+    public function GetSyncState(): string
+    {
+        // Best Practice: Wir geben den Inhalt des geschützten Attributs 
+        // für externe Analyse-Tools frei.
+        return $this->ReadAttributeString('_SyncState');
+    }
+
 
     public function DeletePerformanceVariables()
     {
