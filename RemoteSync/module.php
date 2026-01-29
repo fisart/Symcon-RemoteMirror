@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.8.8
+// Version 1.8.9
 
 class RemoteSync extends IPSModule
 {
@@ -993,7 +993,7 @@ class RemoteSync extends IPSModule
                 $startTime = microtime(true);
                 // Der Aufruf erfolgt nun ohne Unterdrückung. 
                 // Fehler werden durch den catch-Block weiter unten sauber abgefangen und geloggt.
-                $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
+                $result = $this->rpcClient->IPS_RunScriptEx($receiverID, ['DATA' => $jsonPacket]);
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
 
                 // Performance Updates
