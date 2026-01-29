@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.9.1
+// Version 1.9.5
 
 class RemoteSync extends IPSModule
 {
@@ -410,11 +410,33 @@ class RemoteSync extends IPSModule
             $this->UnregisterMessage($senderID, VM_UPDATE);
         }
 
-        // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION ---
+        // --- SELBSTHEILUNG SCHRITT 1: ROOTS (Step 2) BEREINIGEN ---
+        $rootsRaw = $this->ReadPropertyString("Roots");
+        $roots = json_decode($rootsRaw, true) ?: [];
+        $cleanedRoots = [];
+        $rootsChanged = false;
+
+        foreach ($roots as $root) {
+            $rID = (int)($root['LocalRootID'] ?? 0);
+            if ($rID > 0 && IPS_ObjectExists($rID)) {
+                $cleanedRoots[] = $root;
+            } else {
+                $this->Log("Self-Healing: Removing dead Root ID $rID from configuration.", KL_WARNING);
+                $rootsChanged = true;
+            }
+        }
+
+        if ($rootsChanged) {
+            IPS_SetProperty($this->InstanceID, "Roots", json_encode($cleanedRoots));
+            // Wir arbeiten intern sofort mit der bereinigten Liste weiter
+        }
+        $roots = $cleanedRoots;
+
+        // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION (Step 3) ---
         $syncListRaw = $this->ReadAttributeString("SyncListCache");
 
         $syncList = json_decode($syncListRaw, true) ?: [];
-        $roots = json_decode($this->ReadPropertyString("Roots"), true) ?: [];
+        // Hinweis: $roots ist hier bereits die bereinigte Liste aus Schritt 1
 
         $cleanedSyncList = [];
         $uniqueCheck = [];
@@ -426,9 +448,7 @@ class RemoteSync extends IPSModule
             $folder = $item['Folder'] ?? '';
             $rootID = (int)($item['LocalRootID'] ?? 0);
 
-            // --- SONDE 1: Einstieg prüfen ---
-
-
+            // SELBSTHEILUNG: Nur weitermachen, wenn das Objekt wirklich existiert
             if ($vID === 0 || !IPS_ObjectExists($vID)) {
                 $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
                 continue;
@@ -445,8 +465,7 @@ class RemoteSync extends IPSModule
             }
 
             if (!$mappingIsValid) {
-                // --- SONDE 2: Ablehnungsgrund prüfen ---
-
+                // SELBSTHEILUNG: Verwaiste Variablen (deren Root gelöscht wurde) werden hier entfernt
                 $this->Log("Consistency Check: Dropping ID $vID - Mapping or hierarchy changed.", KL_WARNING);
                 continue;
             }
