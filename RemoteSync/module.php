@@ -1019,7 +1019,13 @@ class RemoteSync extends IPSModule
             }
 
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-            $receiverID = $this->FindRemoteScript((int)$target['RemoteScriptRootID'], "RS_Receiver");
+            // ÄNDERUNG v1.9.4: Wir suchen nur noch (Read-Only), wir erstellen hier niemals neue Skripte!
+            $receiverID = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
+
+            // Falls das Skript fehlt, geben wir einen Hinweis aus
+            if ($receiverID === 0) {
+                $this->Log("RemoteSync Error: Receiver script not found on '" . $FolderName . "'. Please run 'Install Remote' in Step 1.", KL_ERROR);
+            }
 
             if ($receiverID > 0 && $this->rpcClient) {
 
@@ -1066,7 +1072,38 @@ class RemoteSync extends IPSModule
 
 
 
+    private function GetRemoteScriptID(int $parentID, string $ident): int
+    {
+        // 1. Suche über Ident
+        try {
+            $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
+            if ($id > 0) {
+                $obj = $this->rpcClient->IPS_GetObject($id);
+                if ($obj['ObjectType'] == 3) return $id;
+            }
+        } catch (Exception $e) {
+        }
 
+        // 2. Fallback: Suche über Namen (ohne das Skript zu heilen oder zu verändern)
+        try {
+            $possibleNames = ($ident === 'RS_Gateway')
+                ? ['RemoteSync_Gateway', 'RemoteSync Gateway']
+                : ['RemoteSync_Receiver', 'RemoteSync Receiver'];
+
+            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
+            if (is_array($children)) {
+                foreach ($children as $cID) {
+                    $obj = $this->rpcClient->IPS_GetObject($cID);
+                    if ($obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
+                        return $cID;
+                    }
+                }
+            }
+        } catch (Exception $e) {
+        }
+
+        return 0; // Nichts gefunden
+    }
 
 
     private function GenerateReceiverCode($gatewayID)
