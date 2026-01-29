@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Version 1.9.5
+// Version 1.9.8
 
 class RemoteSync extends IPSModule
 {
@@ -42,6 +42,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString('_SyncState', '{"buffer":{},"events":{},"starts":{}}');
         $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
+        $this->RegisterAttributeString('_RemoteIDCache', '{}');
 
         // --- TIMERS ---
 
@@ -311,6 +312,12 @@ class RemoteSync extends IPSModule
             $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
 
             $this->SendDebug("RS_Install", "Scripts successfully updated on Remote System.", 0);
+
+            // ID im persistenten Cache speichern
+            $idCache = json_decode($this->ReadAttributeString('_RemoteIDCache'), true) ?: [];
+            $idCache[$Folder . '_RX'] = $rxID;
+            $idCache[$Folder . '_GW'] = $gwID;
+            $this->WriteAttributeString('_RemoteIDCache', json_encode($idCache));
             echo "Success: Scripts installed on $Folder (Ident-based)";
         } catch (Exception $e) {
             $this->SendDebug("RS_Error", "Exception during Install: " . $e->getMessage(), 0);
@@ -1039,14 +1046,19 @@ class RemoteSync extends IPSModule
             }
 
             $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-            // ÄNDERUNG v1.9.4: Wir suchen nur noch (Read-Only), wir erstellen hier niemals neue Skripte!
-            // --- NEU v1.9.7: ID-Caching Logik ---
-            $cacheKey = $FolderName . '_RX';
-            if (!isset($this->remoteScriptCache[$cacheKey]) || $this->remoteScriptCache[$cacheKey] === 0) {
-                $this->remoteScriptCache[$cacheKey] = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
+
+            // --- NEU v1.9.8: Persistenter ID-Cache (Attribute) ---
+            $idCache = json_decode($this->ReadAttributeString('_RemoteIDCache'), true) ?: [];
+            $receiverID = $idCache[$FolderName . '_RX'] ?? 0;
+
+            if ($receiverID === 0) {
+                $receiverID = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
+                if ($receiverID > 0) {
+                    $idCache[$FolderName . '_RX'] = $receiverID;
+                    $this->WriteAttributeString('_RemoteIDCache', json_encode($idCache));
+                }
             }
-            $receiverID = $this->remoteScriptCache[$cacheKey];
-            // ------------------------------------
+            // -----------------------------------------------------
 
             // Falls das Skript fehlt, geben wir einen Hinweis aus
             if ($receiverID === 0) {
