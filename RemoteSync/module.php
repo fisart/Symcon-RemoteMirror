@@ -348,7 +348,7 @@ class RemoteSync extends IPSModule
                 foreach ($children as $cID) {
                     $obj = $this->rpcClient->IPS_GetObject($cID);
 
-                    if ($obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
+                    if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
                         try {
                             $this->rpcClient->IPS_SetIdent($cID, $ident);
                             $this->rpcClient->IPS_SetName($cID, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
