@@ -769,21 +769,39 @@ class RemoteSync extends IPSModule
                         SetValue($qVarID, $totalQueue);
                     }
 
-                    // 5. Worker-Start (MODIFIZIERT v1.9.0: Lane-spezifischer Pre-Flight Check)
+                    // 5. Worker-Start (GATED: min batch size OR max wait time)
                     // Der Lock-Name enthält nun die LaneID
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $laneID;
 
-                    // Wir prüfen, ob die Semaphore für DIESE Lane bereits belegt ist
-                    if (IPS_SemaphoreEnter($lockName, 0)) {
-                        IPS_SemaphoreLeave($lockName);
+                    // --- Gating Parameter (tuned for high RTT links) ---
+                    $minBatch   = 20;   // Start flush when at least N items are queued in this lane
+                    $maxWaitSec = 0.25; // Or when the oldest queued item waited this long
 
-                        // Übergabe der LaneID an den Worker
-                        $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "', " . $laneID . ");";
-                        if (!IPS_RunScriptText($script)) {
-                            $this->Log("Critical Error: Worker thread for server '$folderName' Lane $laneID could not be started.", KL_ERROR);
+                    // Lane Queue Length + Age (read once)
+                    $currentState = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+                    $laneQueueLen = 0;
+                    if (isset($currentState['buffer'][$folderName][$laneID]) && is_array($currentState['buffer'][$folderName][$laneID])) {
+                        $laneQueueLen = count($currentState['buffer'][$folderName][$laneID]);
+                    }
+                    $startTs = $currentState['starts'][$folderName][$laneID] ?? 0;
+                    $ageSec  = ($startTs > 0) ? (microtime(true) - $startTs) : 0;
+
+                    // Only flush if threshold reached (size) or waiting long enough (age)
+                    $shouldFlush = ($laneQueueLen >= $minBatch) || ($ageSec >= $maxWaitSec);
+
+                    if ($shouldFlush) {
+                        // Wir prüfen, ob die Semaphore für DIESE Lane bereits belegt ist
+                        if (IPS_SemaphoreEnter($lockName, 0)) {
+                            IPS_SemaphoreLeave($lockName);
+
+                            // Übergabe der LaneID an den Worker
+                            $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $folderName . "', " . $laneID . ");";
+                            if (!IPS_RunScriptText($script)) {
+                                $this->Log("Critical Error: Worker thread for server '$folderName' Lane $laneID could not be started.", KL_ERROR);
+                            }
+                        } else {
+                            // Lane ist belegt -> Bestehender Worker übernimmt die Daten später
                         }
-                    } else {
-                        // Lane ist belegt -> Bestehender Worker übernimmt die Daten später
                     }
                 }
             }
