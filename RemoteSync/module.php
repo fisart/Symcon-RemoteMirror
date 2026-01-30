@@ -1126,9 +1126,23 @@ class RemoteSync extends IPSModule
         } finally {
             IPS_SemaphoreLeave($lockName);
 
-            // Yield-Check (v1.9.0: Prüft gezielt die eigene Lane und reicht die LaneID weiter)
-            $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
-            if (isset($checkState['buffer'][$FolderName][$LaneID]) && count($checkState['buffer'][$FolderName][$LaneID]) > 0) {
+            // Yield-Check (GATED: min batch size OR max wait time)
+            $minBatch   = 20;   // Start next flush when at least N items are queued in this lane
+            $maxWaitSec = 0.25; // Or when the oldest queued item waited this long
+
+            $checkState = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+
+            $laneQueueLen = 0;
+            if (isset($checkState['buffer'][$FolderName][$LaneID]) && is_array($checkState['buffer'][$FolderName][$LaneID])) {
+                $laneQueueLen = count($checkState['buffer'][$FolderName][$LaneID]);
+            }
+
+            $startTs = $checkState['starts'][$FolderName][$LaneID] ?? 0;
+            $ageSec  = ($startTs > 0) ? (microtime(true) - $startTs) : 0;
+
+            $shouldFlush = ($laneQueueLen >= $minBatch) || ($ageSec >= $maxWaitSec);
+
+            if ($shouldFlush && $laneQueueLen > 0) {
                 $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "', " . $LaneID . ");";
                 @IPS_RunScriptText($script);
             }
