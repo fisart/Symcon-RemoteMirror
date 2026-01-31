@@ -6,7 +6,7 @@ declare(strict_types=1);
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.5.5';
+    const VERSION = '1.9.8';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -569,12 +569,15 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
-        if ($SenderID == 25458) {
-            $this->LogMessage("DEBUG_25458: Message received in MessageSink", KL_MESSAGE);
-        }
-        // Bei VM_UPDATE enthält $Data[0] den neuen Wert der Variable.
-        // Wir übergeben diesen direkt an AddToBuffer, um Race Conditions zu vermeiden.
+        $t1 = ($SenderID == 25458) ? microtime(true) : 0;
+        if ($t1 > 0) $this->LogMessage("TRACE_SINK_START: ID $SenderID at $t1", KL_MESSAGE);
+
         $this->AddToBuffer($SenderID, $Data[0]);
+
+        if ($t1 > 0) {
+            $t2 = microtime(true);
+            $this->LogMessage("TRACE_SINK_END: ID $SenderID at $t2 (Duration: " . ($t2 - $t1) . "s)", KL_MESSAGE);
+        }
     }
 
     public function ProcessSync()
