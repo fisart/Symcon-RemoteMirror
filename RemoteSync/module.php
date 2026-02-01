@@ -2,17 +2,17 @@
 
 declare(strict_types=1);
 
-// Version 1.9.8
+// Version 1.11.3
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.9.8';
+    const VERSION = '1.11.3';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
     // We rely on attribute locking for state management
     private $isSending = false;
-    private $remoteScriptCache = []; // NEU v1.9.7: RAM-Cache für Remote-IDs
+
 
     public function Create()
     {
@@ -27,6 +27,7 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyBoolean('AutoCreate', true);
         $this->RegisterPropertyBoolean('ReplicateProfiles', true);
         $this->RegisterPropertyInteger('LaneCount', 3);
+        $this->RegisterPropertyInteger('PerformanceInterval', 60); // NEU: Intervall in s
 
         $this->RegisterPropertyInteger('LocalPasswordModuleID', 0);
         $this->RegisterPropertyString('LocalServerKey', '');
@@ -43,10 +44,9 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeBoolean('_IsSending', false);
         $this->RegisterAttributeString("SyncListCache", "[]");
         $this->RegisterAttributeString('_RemoteIDCache', '{}');
-
-        // --- TIMERS ---
-
-
+        $this->RegisterAttributeString('_PerfBuffer', '{}'); // NEU: Puffer für Metriken
+        // Timer für Performance-Metriken
+        $this->RegisterTimer('UpdatePerformanceTimer', 0, 'RS_PublishPerformanceMetrics($_IPS[\'TARGET\']);');
     }
 
 
@@ -514,6 +514,8 @@ class RemoteSync extends IPSModule
                 @IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");");
             }
         }
+
+        $this->SetTimerInterval('UpdatePerformanceTimer', $this->ReadPropertyInteger('PerformanceInterval') * 1000);
     }
 
     public function RequestAction($Ident, $Value)
@@ -759,20 +761,7 @@ class RemoteSync extends IPSModule
                         }
                     }
 
-                    // 4. Update Queue Size Monitoring (Summe über alle Lanes dieses Folders)
-                    $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-                    if ($qVarID > 0) {
-                        $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
-                        $totalQueue = 0;
-                        if (isset($currentState['buffer'][$folderName])) {
-                            foreach ($currentState['buffer'][$folderName] as $laneData) {
-                                $totalQueue += count($laneData);
-                            }
-                        }
-                        SetValue($qVarID, $totalQueue);
-                    }
-
-                    // 5. Worker-Start (MODIFIZIERT v1.9.0: Lane-spezifischer Pre-Flight Check)
+                    // 4. Worker-Start (MODIFIZIERT v1.9.0: Lane-spezifischer Pre-Flight Check)
                     // Der Lock-Name enthält nun die LaneID
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $laneID;
 
@@ -826,7 +815,8 @@ class RemoteSync extends IPSModule
                 'LocalServerKey'        => $this->ReadPropertyString('LocalServerKey'),
                 'DebugMode'             => $this->ReadPropertyBoolean('DebugMode'),
                 'AutoCreate'            => $this->ReadPropertyBoolean('AutoCreate'),
-                'ReplicateProfiles'     => $this->ReadPropertyBoolean('ReplicateProfiles')
+                'ReplicateProfiles'     => $this->ReadPropertyBoolean('ReplicateProfiles'),
+                'PerformanceInterval'   => $this->ReadPropertyInteger('PerformanceInterval')
             ],
             'Attributes' => [
                 'SyncListCache' => $this->ReadAttributeString('SyncListCache')
@@ -843,8 +833,8 @@ class RemoteSync extends IPSModule
     {
         $data = json_decode($JSONString, true);
         if (!$data) return ['status' => false, 'messages' => ['Invalid JSON']];
-        foreach ($data['Properties'] as $key => $v) IPS_SetProperty($this->InstanceID, $key, $v);
-        $this->WriteAttributeString('SyncListCache', $data['Attributes']['SyncListCache']);
+        foreach (($data['Properties'] ?? []) as $key => $v) IPS_SetProperty($this->InstanceID, $key, $v);
+        $this->WriteAttributeString('SyncListCache', $data['Attributes']['SyncListCache'] ?? '[]');
         IPS_ApplyChanges($this->InstanceID);
         return ['status' => true, 'messages' => []];
     }
@@ -939,6 +929,77 @@ class RemoteSync extends IPSModule
         }
     }
 
+    public function PublishPerformanceMetrics()
+    {
+        $stateLock = "RS_StateLock_" . $this->InstanceID;
+        $perf = [];
+        $state = [];
+
+        // 1. Atomarer Snapshot und Reset des Puffers
+        if (IPS_SemaphoreEnter($stateLock, 1000)) {
+            try {
+                $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
+                $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: [];
+                $this->WriteAttributeString('_PerfBuffer', '{}');
+            } finally {
+                IPS_SemaphoreLeave($stateLock);
+            }
+        } else {
+            return; // Lock Timeout: Wir versuchen es beim nächsten Timer-Intervall erneut
+        }
+
+        // 2. Verarbeitung pro konfiguriertem Server-Target
+        $targets = json_decode($this->ReadPropertyString("Targets"), true) ?: [];
+        foreach ($targets as $target) {
+            $folderName = $target['Name'] ?? '';
+            if ($folderName === '') continue;
+
+            $folderHash = md5($folderName);
+            $short = substr($folderHash, 0, 20);
+            $p = $perf[$folderName] ?? null;
+
+            // -- Übertragungswerte (Durchschnittsberechnung) --
+            if ($p) {
+                if ($p['Count'] > 0) {
+                    $rID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
+                    if ($rID > 0) SetValue($rID, round($p['RTT'] / $p['Count'], 2));
+
+                    $bID = @IPS_GetObjectIDByIdent("B" . $short, $this->InstanceID);
+                    if ($bID > 0) SetValue($bID, $p['Batch']);
+
+                    $sID = @IPS_GetObjectIDByIdent("S" . $short, $this->InstanceID);
+                    if ($sID > 0) SetValue($sID, round($p['Size'], 2));
+
+                    $dID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
+                    if ($dID > 0) SetValue($dID, $p['Skipped']);
+
+                    $lID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
+                    if ($lID > 0) SetValue($lID, round($p['Lag'] / $p['Count'], 2));
+                }
+
+                // Error-Update erfolgt auch dann, wenn Count 0 ist
+                // Error-Update erfolgt unabhängig von erfolgreichen Übertragungen
+                if ($p && $p['Errors'] > 0) {
+                    $eID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
+                    if ($eID > 0) SetValue($eID, GetValue($eID) + $p['Errors']);
+                }
+            }
+
+            // -- Queue Monitoring (Aktueller Füllstand aller Lanes) --
+            $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
+            if ($qVarID > 0) {
+                $totalQueue = 0;
+                if (isset($state['buffer'][$folderName])) {
+                    foreach ($state['buffer'][$folderName] as $laneData) {
+                        $totalQueue += count($laneData);
+                    }
+                }
+                SetValue($qVarID, $totalQueue);
+            }
+        }
+    }
+
+
     public function FlushBuffer(string $FolderName = "", int $LaneID = 1)
     {
         if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
@@ -1016,17 +1077,6 @@ class RemoteSync extends IPSModule
 
             $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items in this server-batch (Lane $LaneID) for $FolderName: $totalItems", KL_MESSAGE);
 
-            // Queue Size Monitoring (Wir zeigen hier weiterhin die Summe aller Lanes zur Übersicht)
-            $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
-            if ($qVarID > 0) {
-                $currentState = json_decode($this->ReadAttributeString('_SyncState'), true);
-                $totalQueue = 0;
-                if (isset($currentState['buffer'][$FolderName])) {
-                    foreach ($currentState['buffer'][$FolderName] as $laneData) $totalQueue += count($laneData);
-                }
-                SetValue($qVarID, $totalQueue);
-            }
-
             // Config-Abruf
             $firstVar = reset($variables);
             $target = $this->GetTargetConfig($FolderName);
@@ -1085,29 +1135,38 @@ class RemoteSync extends IPSModule
                 // KORREKTUR v1.9.0: Zurück zu RunScriptWaitEx für RTT/Error Messung
                 $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
                 $duration = round((microtime(true) - $startTime) * 1000, 2);
-
-                // Performance Updates
-                $rttVarID = @IPS_GetObjectIDByIdent("R" . $short, $this->InstanceID);
-                if ($rttVarID > 0) SetValue($rttVarID, $duration);
-
-                $batchVarID = @IPS_GetObjectIDByIdent("B" . $short, $this->InstanceID);
-                if ($batchVarID > 0) SetValue($batchVarID, count($batch));
-
-                $sizeVarID = @IPS_GetObjectIDByIdent("S" . $short, $this->InstanceID);
-                if ($sizeVarID > 0) SetValue($sizeVarID, $sizeKB);
-
-                $skippedVarID = @IPS_GetObjectIDByIdent("D" . $short, $this->InstanceID);
-                if ($skippedVarID > 0) SetValue($skippedVarID, $skipped);
-
-                // Lag-Berechnung gegen den globalen Startzeitpunkt der Lane
                 $lag = round(microtime(true) - $firstEventTime, 2);
-                $lagVarID = @IPS_GetObjectIDByIdent("L" . $short, $this->InstanceID);
-                if ($lagVarID > 0) SetValue($lagVarID, $lag);
+
+                // --- AGGREGATION v1.10.0: Metriken in Puffer schreiben statt direktes SetValue ---
+                if (IPS_SemaphoreEnter($stateLock, 1000)) {
+                    try {
+                        $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
+                        $p = $perf[$FolderName] ?? ['RTT' => 0, 'Batch' => 0, 'Size' => 0, 'Skipped' => 0, 'Lag' => 0, 'Errors' => 0, 'Count' => 0];
+                        $p['RTT'] += $duration;
+                        $p['Batch'] += count($batch);
+                        $p['Size'] += $sizeKB;
+                        $p['Skipped'] += $skipped;
+                        $p['Lag'] += $lag;
+                        $p['Count']++;
+                        $perf[$FolderName] = $p;
+                        $this->WriteAttributeString('_PerfBuffer', json_encode($perf));
+                    } finally {
+                        IPS_SemaphoreLeave($stateLock);
+                    }
+                }
             }
         } catch (Exception $e) {
             $this->Log("[BUFFER-CHECK] FlushBuffer Exception Lane $LaneID: " . $e->getMessage(), KL_ERROR);
-            $errVarID = @IPS_GetObjectIDByIdent("E" . $short, $this->InstanceID);
-            if ($errVarID > 0) SetValue($errVarID, GetValue($errVarID) + 1);
+            if (IPS_SemaphoreEnter($stateLock, 1000)) {
+                try {
+                    $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
+                    if (!isset($perf[$FolderName])) $perf[$FolderName] = ['RTT' => 0, 'Batch' => 0, 'Size' => 0, 'Skipped' => 0, 'Lag' => 0, 'Errors' => 0, 'Count' => 0];
+                    $perf[$FolderName]['Errors']++;
+                    $this->WriteAttributeString('_PerfBuffer', json_encode($perf));
+                } finally {
+                    IPS_SemaphoreLeave($stateLock);
+                }
+            }
         } finally {
             IPS_SemaphoreLeave($lockName);
 
