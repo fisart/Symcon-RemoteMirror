@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.11.4
+// Version 1.12.0
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.11.4';
+    const VERSION = '1.12.0';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -45,6 +45,7 @@ class RemoteSync extends IPSModule
         $this->RegisterAttributeString("SyncListCache", "[]");
         $this->RegisterAttributeString('_RemoteIDCache', '{}');
         $this->RegisterAttributeString('_PerfBuffer', '{}'); // NEU: Puffer für Metriken
+        $this->RegisterPropertyInteger('MaxBufferSize', 5000);
         // Timer für Performance-Metriken
         $this->RegisterTimer('UpdatePerformanceTimer', 0, 'RS_PublishPerformanceMetrics($_IPS[\'TARGET\']);');
     }
@@ -690,6 +691,7 @@ class RemoteSync extends IPSModule
         $laneCount = $this->ReadPropertyInteger('LaneCount');
         if ($laneCount < 1) $laneCount = 1;
         $laneID = ($localID % $laneCount) + 1;
+        $maxLimit = $this->ReadPropertyInteger('MaxBufferSize'); // NEU v1.12.0
         // -----------------------------------
 
         foreach ($this->config['SyncList'] as $item) {
@@ -719,6 +721,14 @@ class RemoteSync extends IPSModule
                             if (!isset($state['starts'][$folderName]) || !is_array($state['starts'][$folderName])) $state['starts'][$folderName] = [];
                             // ----------------------------------------------------------------
 
+                            // --- NEU v1.12.0: Buffer-Limit Check (Circuit Breaker) ---
+                            if (isset($state['buffer'][$folderName][$laneID]) && count($state['buffer'][$folderName][$laneID]) >= $maxLimit) {
+                                $this->Log("[BUFFER-OVERFLOW] Server $folderName Lane $laneID reached limit ($maxLimit). Dropping event.", KL_WARNING);
+                                IPS_SemaphoreLeave($stateLock);
+                                return;
+                            }
+                            // ---------------------------------------------------------
+
                             // --- NEU v1.9.1: Automatische Struktur-Migration (Fix für Fatal Error) ---
                             if (!empty($state['buffer'][$folderName])) {
                                 $firstElement = reset($state['buffer'][$folderName]);
@@ -730,8 +740,8 @@ class RemoteSync extends IPSModule
                                 }
                             }
 
-                            // v1.6.2 Logik (Anti-Conflation)
-                            $bufferKey = (string)$localID;
+                            // --- NEU v1.11.6/1.12.0: Eindeutige Keys für Full History ---
+                            $bufferKey = !empty($item['FullHistory']) ? $localID . '_' . microtime(true) : (string)$localID;
 
                             // --- NEU v1.8.7: Zeitstempel-Schutz (Timestamp Preservation) ---
                             // ÄNDERUNG v1.9.0: Pfad inkludiert jetzt die laneID
@@ -813,7 +823,8 @@ class RemoteSync extends IPSModule
                 'DebugMode'             => $this->ReadPropertyBoolean('DebugMode'),
                 'AutoCreate'            => $this->ReadPropertyBoolean('AutoCreate'),
                 'ReplicateProfiles'     => $this->ReadPropertyBoolean('ReplicateProfiles'),
-                'PerformanceInterval'   => $this->ReadPropertyInteger('PerformanceInterval')
+                'PerformanceInterval'   => $this->ReadPropertyInteger('PerformanceInterval'),
+                'MaxBufferSize'         => $this->ReadPropertyInteger('MaxBufferSize')
             ],
             'Attributes' => [
                 'SyncListCache' => $this->ReadAttributeString('SyncListCache')
@@ -1079,8 +1090,8 @@ class RemoteSync extends IPSModule
             $target = $this->GetTargetConfig($FolderName);
 
             if (!$target || !$this->InitConnectionForFolder($target)) {
-                $this->Log("[BUFFER-CHECK] FlushBuffer: ERROR - Connection to " . $FolderName . " failed.", KL_ERROR);
-                return;
+                // MODIFIZIERT v1.12.0: Throw Exception statt Return um Recovery auszulösen
+                throw new Exception("Connection to " . $FolderName . " failed.");
             }
 
             $batch = array_values($variables);
@@ -1153,9 +1164,20 @@ class RemoteSync extends IPSModule
                 }
             }
         } catch (Exception $e) {
-            $this->Log("[BUFFER-CHECK] FlushBuffer Exception Lane $LaneID: " . $e->getMessage(), KL_ERROR);
-            if (IPS_SemaphoreEnter($stateLock, 1000)) {
+            $this->Log("[BUFFER-CHECK] FlushBuffer Recovery Lane $LaneID: " . $e->getMessage(), KL_ERROR);
+
+            // --- RECOVERY LOGIK v1.12.0 (Prepend für korrekte Chronologie) ---
+            if (IPS_SemaphoreEnter($stateLock, 2000)) {
                 try {
+                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
+
+                    // Wir nutzen den Union-Operator (+), um die gescheiterten Items VORNE anzufügen.
+                    // Dabei überschreiben wir NICHTS, was in der Zwischenzeit neuer reingekommen ist.
+                    $currentLaneBuffer = $state['buffer'][$FolderName][$LaneID] ?? [];
+                    $state['buffer'][$FolderName][$LaneID] = $variables + $currentLaneBuffer;
+
+                    $this->WriteAttributeString('_SyncState', json_encode($state));
+
                     $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
                     if (!isset($perf[$FolderName])) $perf[$FolderName] = ['RTT' => 0, 'Batch' => 0, 'Size' => 0, 'Skipped' => 0, 'Lag' => 0, 'Errors' => 0, 'Count' => 0];
                     $perf[$FolderName]['Errors']++;
