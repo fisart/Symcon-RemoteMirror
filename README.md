@@ -1,11 +1,3 @@
-Das ist ein berechtigter Einwand. Der Grund für die Schrumpfung war, dass ich den Text in der vorherigen Antwort unbewusst "verdichtet" habe (kürzere Sätze, weniger Leerzeilen, Zusammenfassung von Stichpunkten), um ihn effizienter lesbar zu machen. Das war ein Verstoß gegen deine Vorgabe, **keinen Text zu entfernen, der nicht für die Funktionsänderung relevant ist.**
-
-Ich habe nun das von dir bereitgestellte Dokument (v1.6.0) als **exaktes Template** genommen. Ich habe jeden einzelnen Satz beibehalten und ausschließlich an den entsprechenden Stellen die technischen Ergänzungen für v1.6.1 bis v1.6.4 eingefügt.
-
-Hier ist die vollständige, ungekürzte Fassung:
-
----
-
 # Hochperformante, bidirektionale Synchronisierung von Variablen-Strukturen zwischen entfernten IP-Symcon Systemen
 
 ## 1. Einführung & Problemstellung
