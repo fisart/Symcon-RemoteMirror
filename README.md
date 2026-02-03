@@ -8,64 +8,74 @@ In komplexen IP-Symcon-Umgebungen mit mehreren Standorten (z. B. Haupthaus, Gart
 - **Wartungsaufwand:** Manuelles Anlegen von Variablen und Profilen auf Zielsystemen ist fehleranfällig.
 - **Fehlende Interaktion:** Reine Visualisierung von Werten reicht meist nicht aus; eine Steuerung zurück zum Quellsystem ist oft komplex zu realisieren.
 
-## 2. Die Lösung: Das RemoteSync-Prinzip (v1.6.4)
+## 2. Die Lösung: Das RemoteSync-Prinzip (v1.12.0)
 
-RemoteSync fungiert als intelligente Brücke, die nicht nur Daten überträgt, sondern die Logik zur Steuerung direkt mitliefert ("Injected Gateway"). **Version 1.6.4** führt das hocheffiziente **Server-Bucket-Modell** sowie Mechanismen zur absoluten Datenintegrität ein.
+RemoteSync fungiert als intelligente Brücke, die nicht nur Daten überträgt, sondern die Logik zur Steuerung direkt mitliefert ("Injected Gateway"). **Version 1.12.0** führt das hocheffiziente **Multi-Lane-Modell** sowie Mechanismen zur absoluten Datensicherheit bei Leitungsausfällen ein.
 
 - **Autonomes Worker-Modell:** Das Modul nutzt ein event-getriebenes System mit Semaphoren auf Server-Ebene. Seit v1.6.1 arbeitet das Modul vollständig asynchron und timer-frei.
-- **Atomares State-Locking (v1.6.4):** Zur Vermeidung von Race Conditions bei hohem Datenaufkommen nutzt das Modul einen internen State-Lock (`RS_StateLock`), der den Zugriff auf den Puffer threadsicher regelt.
-- **Echtzeit-Event-Erfassung (v1.6.3):** Werte werden im Moment des Events direkt eingefroren ("Captured"), um sicherzustellen, dass jeder Zwischenschritt erfasst wird, bevor die Variable sich erneut ändert.
-- **Full-History / Anti-Conflation (v1.6.2):** Optional kann pro Variable gewählt werden, ob Zwischenwerte verworfen werden ("Last-Value-Wins") oder eine lückenlose Historie aller Änderungen übertragen wird.
-- **Dynamisches Übertragungsverhalten (Server-Bucket):**
-  - **Einzel-Updates (IDLE-Zustand):** Ändert sich eine einzelne Variable, wird der Worker-Thread sofort gestartet. Die Änderung wird ohne künstliche Verzögerung übertragen.
-  - **Server-Bündelung / Bursts (BUSY-Zustand):** Während eine Übertragung läuft, wirkt das Modul wie ein „selbstregulierendes Ventil“. Alle Änderungen für denselben Ziel-Server (unabhängig vom Mapping) sammeln sich im **Server-Bucket** und werden nach Abschluss der aktuellen Übertragung sofort als ein hocheffizientes Multi-Root-Batch-Paket nachgereicht.
+- **Multi-Lane-Parallelismus (v1.9.0):** Daten werden auf mehrere parallele Übertragungswege (Lanes) verteilt. Dies verhindert, dass eine einzelne hochfrequente Variable den gesamten Sync-Prozess blockiert.
+- **Aggregiertes Metriken-Modell (v1.10.0):** Performance-Daten werden über ein einstellbares Intervall gesammelt und als Durchschnittswerte veröffentlicht, um die Systemlast zu minimieren.
+- **Safety Circuit Breaker (v1.12.0):** Ein einstellbares Puffer-Limit (`MaxBufferSize`) schützt den Arbeitsspeicher vor Überlastung bei langandauernden Leitungsausfällen.
+- **Chronologische Recovery (v1.12.0):** Gescheiterte Übertragungen werden automatisch an den Anfang der Lane zurückgeschrieben, ohne neuere Werte zu überschreiben.
+- **Atomares State-Locking (v1.6.4):** Zur Vermeidung von Race Conditions nutzt das Modul einen internen State-Lock (`RS_StateLock`), der den Zugriff auf den Puffer threadsicher regelt.
+- **Echtzeit-Event-Erfassung (v1.6.3):** Werte werden im Moment des Events direkt eingefroren ("Captured").
+- **Full-History / Anti-Conflation (v1.6.2):** Optional lückenlose Historie aller Änderungen. Seit v1.11.6 durch eindeutige History-Keys im Puffer geschützt.
+- **cURL-Transport-Layer (v1.9.9):** Hochstabiler Versand mit präzisen Timeouts via cURL.
 - **Profil-Replikation:** Lokale Variablenprofile werden automatisch auf dem Zielsystem erstellt.
 - **Unified Dashboard:** Ermöglicht die Zusammenführung vieler Quell-Systeme in einer einzigen Benutzeroberfläche (Symcon UI / IPSView).
 
 ## 3. Datenfluss & Architektur
 
-### A. Synchronisations-Ablauf (Logik v1.6.4)
+### A. Synchronisations-Ablauf (Logik v1.12.0)
 
 ```mermaid
-graph TD
-    subgraph "LOKALES SYSTEM (Quelle)"
-        A1[Variable Änderung] -->|Value Capture v1.6.3| B[AddToBuffer]
-        B -->|State-Lock v1.6.4| C[Server-Bucket 'Server X']
-        C -->|Server-Semaphore| D[Multi-Root RPC Batch Send]
-        L[Local Action Handler] <--- M[Gateway Request]
+sequenceDiagram
+    participant V as Lokale Variable
+    participant MOD as RemoteSync (Logic)
+    participant ST as _SyncState (Attribute)
+    participant FB as FlushBuffer (Lane-Worker)
+    participant REM as Remote Server
+
+    V->>MOD: Wertänderung (Event)
+    MOD->>MOD: Wert sofort einfrieren (Capture)
+    MOD->>MOD: Lane-Berechnung (ID % LaneCount)
+    
+    rect rgb(230, 240, 255)
+        Note over MOD,ST: State-Lock (v1.6.4)
+        MOD->>ST: In Lane-Segment schreiben (v1.12.0 Safety Check)
     end
-    subgraph "REMOTE SYSTEM (Ziel)"
-        D --> E[Receiver Script v1.6]
-        E -->|Item-Level Routing| F1[Remote Wurzel A]
-        E -->|Item-Level Routing| F2[Remote Wurzel B]
-        E -->|Sync| G[Profile]
-        F1 -->|Bedienung| H[User Aktion]
-        H --> I[Gateway Script]
-        I -->|RPC Callback| M
+    
+    MOD->>MOD: Pre-Flight Check (Lane-Semaphore frei?)
+    
+    alt Lane-Semaphore frei
+        MOD->>FB: Startet Worker für Lane X
+    else Lane-Semaphore belegt
+        MOD->>MOD: Thread beendet (Daten warten im Bucket)
+    end
+
+    loop Chunking-Zyklus (400 Items)
+        FB->>FB: Einnimmt Lane-Semaphore (Lock)
+        rect rgb(230, 240, 255)
+            Note over FB,ST: State-Lock
+            FB->>ST: Entnehme max. 400 Items
+        end
+        
+        FB->>REM: RPC-Batch via cURL (60s Timeout)
+        
+        alt Erfolg
+            FB-->>MOD: Metriken aggregieren (v1.10.0)
+        else Fehler / Timeout
+            Note over FB,ST: Chronologische Recovery (v1.12.0)
+            FB->>ST: Items an den Anfang der Lane zurückschreiben
+        end
+        
+        FB->>ST: Yield-Check (Lane leer?)
     end
 ```
 
 ### B. Worker-Modell & Parallelität
 
-RemoteSync nutzt System-Semaphoren zur Steuerung der Parallelität auf Basis des **Ziel-Servers (Folder Name)** sowie einen internen State-Lock zum Schutz der Puffer-Integrität. Dies garantiert, dass pro Remote-System immer genau eine Verbindung aktiv ist, was den Netzwerk-Overhead (HTTPS-Handshakes) massiv reduziert.
-
-```mermaid
-graph TD
-    Start[Variablen Änderung] --> Capture[Wert einfrieren v1.6.3]
-    Capture --> SLock[State-Lock einnehmen v1.6.4]
-    SLock --> Add[In Server-Bucket schreiben]
-    Add --> SUnlock[State-Lock freigeben]
-    SUnlock --> Lock{Server-Semaphore frei?}
-    Lock -->|Ja| Worker[Worker Thread startet]
-    Lock -->|Nein| Exit[Thread beendet<br/>Daten warten im Bucket]
-    Worker --> Batch[Daten extrahieren & State-Lock]
-    Batch --> RPC[RPC Übertragung aller Roots]
-    RPC --> Stats[Performance Messung pro Server]
-    Stats --> Unlock[Semaphore freigeben]
-    Unlock --> Recheck{Neue Daten im Bucket?}
-    Recheck -->|Ja| Worker
-    Recheck -->|Nein| IDLE
-```
+RemoteSync nutzt System-Semaphoren zur Steuerung der Parallelität auf Basis des **Ziel-Servers (Folder Name)** sowie der **Lane-ID** (v1.9.0). Dies garantiert, dass pro Lane immer genau eine Verbindung aktiv ist, was den Netzwerk-Overhead massiv reduziert, während verschiedene Lanes desselben Servers parallel arbeiten können.
 
 ### C. Das "Unified Dashboard" (N:1 Föderation)
 
@@ -92,60 +102,51 @@ graph RL
 
 ### A. Das "Last-Value-Wins" Prinzip
 
-Um die Netzwerklast zu minimieren, bereinigt RemoteSync den Puffer pro Server automatisch. Befinden sich mehrere Aktualisierungen derselben Variable gleichzeitig im Bucket, wird im Standardmodus nur der **zuletzt erfasste Wert** übertragen. Hierdurch können bei extrem schnellen Wertänderungen einzelne Zwischenschritte in der Zeitreihe übersprungen werden. **Seit v1.6.2** kann über die Option **"Full History"** eine lückenlose Übertragung aller Zwischenschritte erzwungen werden.
+Um die Netzwerklast zu minimieren, bereinigt RemoteSync den Puffer pro Server automatisch. Befinden sich mehrere Aktualisierungen derselben Variable gleichzeitig im Bucket, wird im Standardmodus nur der **zuletzt erfasste Wert** übertragen. Seit **v1.6.2** kann über die Option **"Full History"** eine lückenlose Übertragung erzwungen werden, die seit **v1.11.6** durch persistente Keys auch bei Verbindungsabbrüchen geschützt ist.
 
-### B. Gruppierung nach Servern (v1.6.0 Effizienz)
+### B. Gruppierung nach Servern & Lanes (v1.9.0)
 
-Die Zusammenfassung erfolgt nach den definierten **Targets (Folder)**. Alle Mappings, die zum selben Server führen, teilen sich einen Worker-Thread und eine Semaphore. Ein langsames Netzwerk zu _Server A_ beeinträchtigt somit niemals die Geschwindigkeit zu _Server B_.
+Die Zusammenfassung erfolgt nach den definierten **Targets (Folder)** und wird innerhalb dieser auf die konfigurierten **Lanes** verteilt. Ein langsames Netzwerk zu _Server A_ beeinträchtigt niemals die Geschwindigkeit zu _Server B_.
 
-### C. Garantierte Chronologie
+### C. Garantierte Chronologie (v1.12.0)
 
-Das System garantiert eine strikte Sequenzierung innerhalb eines Datenstroms zum Server. Alle Werte werden in der exakten zeitlichen Reihenfolge ihrer Erfassung übertragen. Das Semaphoren-Locking in Kombination mit dem **State-Locking (v1.6.4)** verhindert technisch, dass Pakete sich gegenseitig überholen ("Out-of-Order") oder bereits gesendete Daten den Puffer erneut füllen.
+Das System garantiert eine strikte Sequenzierung. Durch die **Prepend-Logik (v1.12.0)** werden gescheiterte Pakete bei der Recovery wieder an den Anfang des Puffers gestellt, sodass die zeitliche Abfolge auch nach einem Timeout erhalten bleibt.
 
-## 5. Performance Monitoring
+## 5. Performance Monitoring (Aggregiert v1.10.0)
 
-Über das Panel "Performance Monitoring" können Echtzeit-Sensoren pro Ziel-Server installiert werden:
+Über das `PerformanceInterval` werden die Sensoren aktualisiert:
 
-- **RTT (ms):** Gesamtdauer der Netzwerk-Transaktion zum Server.
-- **Batch Size (Items):** Anzahl der gebündelten Änderungen über alle Mappings im letzten Paket.
-- **Payload Size (KB):** Tatsächliche Größe des JSON-Pakets.
-- **Errors (Count):** Zähler für fehlgeschlagene Übertragungen.
-- **Skipped (Count):** Anzahl der durch "Last-Value-Wins" verworfenen Zwischenwerte.
-- **Lag (s):** Zeitverzögerung zwischen der ersten Änderung im Bucket und dem Versand.
-- **Queue (Count):** Aktuelle Anzahl der im Bucket wartenden Änderungen.
+- **RTT (ms):** Durchschnittliche Dauer der Netzwerk-Transaktion.
+- **Batch Size (Items):** Summe der Änderungen im Intervall.
+- **Payload Size (KB):** Summe der übertragenen Datenmenge.
+- **Errors (Count):** Kumulativer Zähler für Fehlversuche.
+- **Skipped (Count):** Durch "Last-Value-Wins" verworfene Werte.
+- **Lag (s):** Durchschnittliche Verzögerung vom Event bis zum Versand.
+- **Queue (Count):** Aktueller Füllstand aller Lanes zum Zeitpunkt der Veröffentlichung.
 
 ## 6. Parametrisierung
 
-- **Schritt 1:** Definition der Remote-Ziele (Folder Name, SEC-Key, Script Root ID, SEC-ID).
-- **Schritt 2:** Zuordnung lokaler Quell-Objekte (Roots) zu den Foldern und Remote-IDs.
+- **Schritt 1:** Remote-Ziele (Folder Name, SEC-Key, Script Root ID, LaneCount, PerformanceInterval, MaxBufferSize).
+- **Schritt 2:** Zuordnung lokaler Quell-Objekte (Roots) zu den Foldern.
 - **Schritt 3:** Auswahl der Variablen (Sync, Full History, R-Action, Remote Löschen).
 
 ## 7. Vergleich: RemoteSync (RS) vs. Natives Sync Remote
 
-| Merkmal          | IP-Symcon "Sync Remote" (Nativ)                | RemoteSync (v1.6.4)                         |
+| Merkmal          | IP-Symcon "Sync Remote" (Nativ)                | RemoteSync (v1.12.0)                        |
 | :--------------- | :--------------------------------------------- | :------------------------------------------ |
 | **Philosophie**  | **Full-Inclusion:** Import des gesamten Baums. | **Selective-Push:** Export gewählter Daten. |
 | **Richtung**     | Server zieht (Pull).                           | Quelle drückt (Push).                       |
-| **Ressourcen**   | Hohe Last durch Voll-Synchronisation.          | Maximum durch Server-Bucket Batching.       |
-| **Verbindungen** | Variabel                                       | **Strikt 1 pro Ziel-Server**                |
-| **Historie**     | Nur aktueller Zustand                          | **Wählbare Full-History**                   |
-
-**Vorteile von RemoteSync:**
-
-1. **Zentralisierung:** Daten vieler Standorte auf einem Visualisierungs-Server.
-2. **Interaktivität:** Entfernte Variablen verhalten sich wie lokale Geräte (inkl. Rücksteuerung).
-3. **Datenschutz:** Nur explizit gewählte Daten verlassen das Quellsystem.
-4. **Effizienz:** Optimiert für schmalbandige Verbindungen (LTE) durch minimale TCP-Handshakes.
+| **Ressourcen**   | Hohe Last durch Voll-Synchronisation.          | Optimiert durch 400er Batches & Lanes.      |
+| **Verbindungen** | Variabel                                       | **Strikt 1 pro Lane (Parallel möglich)**    |
+| **Historie**     | Nur aktueller Zustand                          | **Wählbare Full-History (v1.11.6 safe)**    |
 
 ## 8. Sicherheit & Stabilität
 
 - **SEC-Modul:** Keine Speicherung von Passwörtern im Modul.
-- **Zustandslosigkeit:** Keine persistenten Flags; sauberer Start nach jedem Reboot.
-- **Atomarität (v1.6.4):** Durch den `RS_StateLock` ist die Integrität der gepufferten Daten auch bei massiven Bursts und parallelen Zugriffen jederzeit garantiert.
-- **Verschlüsselung:** TLS-verschlüsseltes HTTPS.
-- **Referenz-Schutz:** Variablen werden auf dem Zielsystem über das Feld `ObjectInfo` (`RS_REF:Key:ID`) eindeutig identifiziert.
-
----
+- **Circuit Breaker (v1.12.0):** Schutz vor RAM-Überlastung durch `MaxBufferSize`.
+- **Atomarität (v1.6.4):** Threadsicherheit durch `RS_StateLock`.
+- **Verschlüsselung:** TLS-verschlüsseltes HTTPS via cURL.
+- **Referenz-Schutz:** Identifikation via `ObjectInfo` (`RS_REF:Key:ID`).
 
 ---
 
@@ -159,110 +160,104 @@ In complex IP-Symcon environments with multiple locations (e.g., main house, gar
 - **Maintenance Effort:** Manually creating variables and profiles on target systems is error-prone.
 - **Lack of Interaction:** Pure visualization is often insufficient; controlling the source system from the remote site is complex to implement.
 
-## 2. The Solution: The RemoteSync Principle (v1.6.4)
+## 2. The Solution: The RemoteSync Principle (v1.12.0)
 
-RemoteSync acts as an intelligent bridge that not only transfers data but also injects the control logic directly ("Injected Gateway"). **Version 1.6.4** introduces the high-efficiency **Server-Bucket Model** and mechanisms for absolute data integrity.
+RemoteSync acts as an intelligent bridge that not only transfers data but also injects the control logic directly ("Injected Gateway"). **Version 1.12.0** introduces the high-efficiency **Multi-Lane Model** and mechanisms for absolute data safety during outages.
 
 - **Autonomous Worker Model:** The module uses an event-driven system with semaphores at the server level. Since v1.6.1, the module is completely asynchronous and timer-free.
-- **Atomic State-Locking (v1.6.4):** To prevent race conditions during high data volume, the module uses an internal state lock (`RS_StateLock`) to regulate buffer access in a thread-safe manner.
-- **Real-Time Event Capture (v1.6.3):** Values are captured at the exact moment of the event to ensure every intermediate step is recorded before the variable changes again.
-- **Full-History / Anti-Conflation (v1.6.2):** Mode selectable per variable to either discard intermediate values ("Last-Value-Wins") or transmit a complete history of all changes.
-- **Dynamic Transmission Behavior (Server-Bucket):**
-  - **Single Updates (IDLE state):** If a single variable changes, the worker thread starts immediately. The change is transferred without artificial delay.
-  - **Server Bundling / Bursts (BUSY state):** During an active transmission, the module acts as a "self-regulating valve." All changes for the same target server (regardless of mapping) accumulate in the **Server-Bucket** and are sent as a high-efficiency multi-root batch package immediately after the current transfer finishes.
+- **Multi-Lane Parallelism (v1.9.0):** Data is distributed across multiple parallel paths (Lanes). This prevents a single high-frequency variable from blocking the entire sync process.
+- **Aggregated Metrics Model (v1.10.0):** Performance data is collected over a configurable interval and published as averages to minimize system load.
+- **Safety Circuit Breaker (v1.12.0):** A configurable buffer limit (`MaxBufferSize`) protects memory from exhaustion during long-term outages.
+- **Chronological Recovery (v1.12.0):** Failed transmissions are automatically prepended to the lane buffer without overwriting newer values.
+- **Atomic State-Locking (v1.6.4):** To prevent race conditions, the module uses an internal state lock (`RS_StateLock`) to regulate buffer access in a thread-safe manner.
+- **Real-Time Event Capture (v1.6.3):** Values are captured at the exact moment of the event.
+- **Full-History / Anti-Conflation (v1.6.2):** Optional gapless history of all changes. Since v1.11.6, protected by unique history keys in the buffer.
+- **cURL Transport Layer (v1.9.9):** Highly stable transmission with precise timeouts via cURL.
 - **Profile Replication:** Local variable profiles are automatically created on the target system.
 - **Unified Dashboard:** Enables the merging of many source systems into a single user interface (Symcon UI / IPSView).
 
 ## 3. Data Flow & Architecture
 
-### A. Synchronization Flow (Logic v1.6.4)
+### A. Synchronization Flow (Logic v1.12.0)
 
-(See Mermaid diagram in German section 3.A, showing Value Capture and State-Lock logic)
+(See Sequence Diagram in German Section 3.A)
 
 ### B. Worker Model & Parallelism
 
-RemoteSync uses system semaphores to control concurrency based on the **Target Server (Folder Name)** and an internal state lock for data integrity. This guarantees that exactly one connection is active per remote system, massively reducing network overhead (HTTPS handshakes).
-
-```mermaid
-graph TD
-    Start[Variable Change] --> Capture[Value Capture v1.6.3]
-    Capture --> SLock[Acquire State-Lock v1.6.4]
-    SLock --> Add[Write to Server-Bucket]
-    Add --> SUnlock[Release State-Lock]
-    SUnlock --> Lock{Server-Semaphore free?}
-    Lock -->|Yes| Worker[Worker Thread starts]
-    Lock -->|No| Exit[Thread ends<br/>Data waits in Bucket]
-    Worker --> Batch[Extract data & State-Lock]
-    Batch --> RPC[RPC transmission of all Roots]
-    RPC --> Stats[Performance measurement per Server]
-    Stats --> Unlock[Release Semaphore]
-    Unlock --> Recheck{New data in Bucket?}
-    Recheck -->|Yes| Worker
-    Recheck -->|No| IDLE
-```
+RemoteSync uses system semaphores to control concurrency based on the **Target Server (Folder Name)** and the **Lane-ID** (v1.9.0). This guarantees that exactly one connection is active per lane, massively reducing network overhead, while different lanes of the same server can operate in parallel.
 
 ### C. Unified Dashboard (N:1 Federation)
 
-(See Mermaid diagram in German section 3.C)
+```mermaid
+graph RL
+    subgraph "Central (Master UI)"
+        MainUI[Central Visualization]
+        Var1[Mirror House A]
+        Var2[Mirror House B]
+        MainUI --> Var1
+        MainUI --> Var2
+    end
+    subgraph "Location A"
+        S1[Server A] -->|Sync| Var1
+        Var1 -->|Action| S1
+    end
+    subgraph "Location B"
+        S2[Server B] -->|Sync| Var2
+        Var2 -->|Action| S2
+    end
+```
 
 ## 4. Data Efficiency & Grouping Logic
 
 ### A. The "Last-Value-Wins" Principle
 
-To minimize network load, RemoteSync automatically cleans the buffer per server. In standard mode, if multiple updates for the same variable are in the bucket simultaneously, only the **most recent value** is transmitted. Consequently, intermediate steps in a time series may be skipped during extremely rapid changes. **Since v1.6.2**, the **"Full History"** option can be used to force a gapless transmission of all intermediate steps.
+To minimize network load, RemoteSync automatically cleans the buffer per server. In standard mode, if multiple updates for the same variable are in the bucket simultaneously, only the **most recent value** is transmitted. Since **v1.6.2**, the **"Full History"** option can be used to force a gapless transmission, protected by persistent keys since **v1.11.6** even during disconnects.
 
-### B. Grouping by Servers (v1.6.0 Efficiency)
+### B. Grouping by Servers & Lanes (v1.9.0)
 
-Data bundling is strictly separated by the defined **Targets (Folders)**. All mappings leading to the same server share one worker thread and one semaphore. A slow network to _Server A_ will never affect the synchronization speed to _Server B_.
+Data bundling is Separation by the defined **Targets (Folders)** and distributed to the configured **Lanes**. A slow network to _Server A_ will never affect the synchronization speed to _Server B_.
 
-### C. Guaranteed Chronology
+### C. Guaranteed Chronology (v1.12.0)
 
-The system guarantees strict sequencing within a data stream to the server. All values are transmitted in the exact chronological order in which they were captured. Semaphore locking combined with **State-Locking (v1.6.4)** technically prevents packages from overtaking each other ("Out-of-Order") or old buffer states from refilling the buffer.
+The system guarantees strict sequencing. Through **Prepend Logic (v1.12.0)**, failed packages are placed back at the beginning of the buffer during recovery, ensuring chronological order even after a timeout.
 
-## 5. Performance Monitoring
+## 5. Performance Monitoring (Aggregated v1.10.0)
 
-Real-time sensors can be installed per target server via the "Performance Monitoring" panel:
+Sensors are updated based on the `PerformanceInterval`:
 
-- **RTT (ms):** Total duration of the network transaction to the server.
-- **Batch Size (Items):** Number of changes bundled across all mappings in the last package.
-- **Payload Size (KB):** Actual size of the transmitted JSON string.
-- **Errors (Count):** Counter for failed transmissions.
-- **Skipped (Count):** Number of intermediate values discarded by "Last-Value-Wins".
-- **Lag (s):** Delay between the first change in the bucket and actual transmission.
-- **Queue (Count):** Current number of changes waiting in the bucket.
+- **RTT (ms):** Average duration of the network transaction.
+- **Batch Size (Items):** Total number of changes in the interval.
+- **Payload Size (KB):** Total data volume transferred.
+- **Errors (Count):** Cumulative counter for failed attempts.
+- **Skipped (Count):** Values discarded by "Last-Value-Wins".
+- **Lag (s):** Average delay from event to transmission.
+- **Queue (Count):** Current level of all lanes at the time of publication.
 
 ## 6. Parameterization
 
-- **Step 1:** Define remote targets (Folder Name, SEC-Key, Script Root ID, SEC-ID).
-- **Step 2:** Map local source objects (Roots) to folders and remote IDs.
+- **Step 1:** Define remote targets (Folder Name, SEC-Key, Script Root ID, LaneCount, PerformanceInterval, MaxBufferSize).
+- **Step 2:** Map local source objects (Roots) to folders.
 - **Step 3:** Individual selection (Sync, Full History, R-Action, Remote Delete).
 
 ## 7. Comparison: RemoteSync (RS) vs. Native Sync Remote
 
-| Feature         | IP-Symcon "Sync Remote" (Native)               | RemoteSync (v1.6.4)                          |
+| Feature         | IP-Symcon "Sync Remote" (Native)               | RemoteSync (v1.12.0)                         |
 | :-------------- | :--------------------------------------------- | :------------------------------------------- |
 | **Philosophy**  | **Full-Inclusion:** Import of the entire tree. | **Selective-Push:** Export of selected data. |
 | **Direction**   | Server pulls.                                  | Source pushes.                               |
-| **Resources**   | High load due to full sync.                    | Maximum via Server-Bucket batching.          |
-| **Connections** | Variable                                       | **Strictly 1 per target server**             |
-| **History**     | Current state only                             | **Selectable Full-History**                  |
-
-**Advantages of RemoteSync:**
-
-1. **Centralization:** Data from many sites on one visualization server.
-2. **Interactivity:** Remote variables behave like local devices (incl. `RequestAction`).
-3. **Data Privacy:** Only explicitly chosen data leaves the source system.
-4. **Efficiency:** Optimized for narrow-band connections (LTE) by minimizing TCP handshakes.
+| **Resources**   | High load due to full sync.                    | Optimized via 400-item Batches & Lanes.      |
+| **Connections** | Variable                                       | **Strictly 1 per Lane (Parallel possible)**  |
+| **History**     | Current state only                             | **Selectable Full-History (v1.11.6 safe)**   |
 
 ## 8. Security & Stability
 
 - **SEC Module:** No passwords stored within the module.
-- **Statelessness:** No persistent flags; clean start after every reboot.
-- **Atomicity (v1.6.4):** Through `RS_StateLock`, the integrity of buffered data is guaranteed at all times, even during massive bursts and parallel access.
-- **Encryption:** TLS-encrypted HTTPS.
-- **Reference Protection:** Variables are uniquely identified on the target system via the `ObjectInfo` field (`RS_REF:Key:ID`).
+- **Circuit Breaker (v1.12.0):** Protection against memory exhaustion via `MaxBufferSize`.
+- **Atomicity (v1.6.4):** Thread-safety through `RS_StateLock`.
+- **Encryption:** TLS-encrypted HTTPS via cURL.
+- **Reference Protection:** Identification via `ObjectInfo` (`RS_REF:Key:ID`).
 
 ---
 
-**Version:** 1.6.4 (Atomic State-Lock Update)
+**Version:** 1.12.0 (High-Performance Safety Update)
 **Status:** Gold Master
