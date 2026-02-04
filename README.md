@@ -148,6 +148,53 @@ Das System garantiert eine strikte Sequenzierung. Durch die **Prepend-Logik (v1.
 - **Verschlüsselung:** TLS-verschlüsseltes HTTPS via cURL.
 - **Referenz-Schutz:** Identifikation via `ObjectInfo` (`RS_REF:Key:ID`).
 
+
+# Dokumentation: Datenstruktur im Password Vault (Secrets Manager)
+
+Damit das **RemoteSync-Modul** eine gesicherte Verbindung zu einem entfernten System aufbauen kann, müssen die Zugangsdaten im IP-Symcon Password Vault (SEC-Modul) in einem spezifischen Format hinterlegt werden.
+
+## 1. Der Identifikator (Secret Key)
+Der **Schlüssel** (Name), unter dem die Daten im Password Vault gespeichert werden, ist frei wählbar (z. B. `Haus_Garten` oder `Server_Zentrale`). 
+
+Dieser Name muss exakt so in der Konfiguration des RemoteSync-Moduls unter **Step 1: "Remote Server Key"** eingetragen oder ausgewählt werden. Er dient als Verknüpfung zwischen dem Modul und dem Vault.
+
+## 2. Der Inhalt (JSON-Array)
+Als Wert für diesen Schlüssel muss ein **JSON-kodierter String** hinterlegt werden. RemoteSync erwartet ein assoziatives Array mit drei Kern-Informationen.
+
+### A. Beispiel-Struktur (JSON)
+```json
+{
+    "URL": "deine-subdomain.ip-symcon.de:3777",
+    "User": "deine-email@beispiel.de",
+    "PW": "dein-fernzugriffs-passwort"
+}
+```
+
+### B. Feld-Definitionen & Fallbacks
+Das Modul ist tolerant gegenüber der Groß-/Kleinschreibung. Es prüft die Felder in der folgenden Reihenfolge:
+
+| Information | Primärer Key | Erlaubte Alternativ-Keys (Fallbacks) | Beschreibung |
+| :--- | :--- | :--- | :--- |
+| **Server-Adresse** | `URL` | `url`, `Url` | Adresse des Zielsystems inkl. Port (ohne `https://`). |
+| **Benutzername** | `User` | `user`, `Username` | E-Mail des Symcon-Kontos für den Fernzugriff. |
+| **Passwort** | `PW` | `pw`, `Password` | Das zugehörige Fernzugriffs-Passwort (API-Passwort). |
+
+## 3. Technische Verarbeitung
+Intern nutzt das Modul den Schlüssel, um die Daten sicher abzurufen und daraus die authentifizierte cURL-Verbindung aufzubauen:
+
+1.  **Abruf:** `$json = SEC_GetSecret($secID, $remoteKey);`
+2.  **Dekodierung:** `$data = json_decode($json, true);`
+3.  **URL-Generierung:** 
+    `https://[USER]:[PASSWORT]@[URL]/api/`
+
+## 4. Einrichtungsschritte
+1.  Öffne die Instanz des **Password Vault (SEC-Modul)** auf deinem lokalen System.
+2.  Erstelle einen neuen Eintrag.
+3.  **Name:** Gib einen eindeutigen Identifikator ein (z. B. `Remote_Server_A`).
+4.  **Wert:** Kopiere das oben beschriebene JSON-Format hinein und passe deine Daten an.
+5.  Wähle im **RemoteSync-Modul** unter Step 1 bei "Remote Server Key" genau diesen Namen (`Remote_Server_A`) aus.
+
+---
 ---
 
 # High-Performance, Bidirectional Synchronization of Variable Structures Between Remote IP-Symcon Systems
