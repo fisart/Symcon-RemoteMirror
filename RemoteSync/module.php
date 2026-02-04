@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.12.0
+// Version 1.12.4
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.12.0';
+    const VERSION = '1.12.4';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -512,7 +512,9 @@ class RemoteSync extends IPSModule
         } else {
             $this->SetStatus(102);
             if ($count > 0 || $hasDeleteTask) {
-                @IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");");
+                if (!IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");")) {
+                    $this->Log("ProcessSync call failed during initial synchronization.", KL_ERROR);
+                }
             }
         }
 
@@ -1193,7 +1195,9 @@ class RemoteSync extends IPSModule
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
             if (isset($checkState['buffer'][$FolderName][$LaneID]) && count($checkState['buffer'][$FolderName][$LaneID]) > 0) {
                 $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "', " . $LaneID . ");";
-                @IPS_RunScriptText($script);
+                if (!IPS_RunScriptText($script)) {
+                    $this->Log("Yield-Check: Failed to start next worker chunk for server '$FolderName' Lane $LaneID.", KL_ERROR);
+                }
             }
         }
     }

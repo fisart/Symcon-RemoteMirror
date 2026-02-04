@@ -5,6 +5,9 @@
             "Debug Mode (Verbose Log)": "Debug-Modus (Ausführliches Log)",
             "Use Auto-Create (Create missing remote objects)": "Auto-Erstellung (Fehlende Remote-Objekte anlegen)",
             "Replicate Variable Profiles (local → remote)": "Variablenprofile replizieren (lokal → remote)",
+            "Parallel Lanes per Server": "Parallele Kanäle pro Server",
+            "Metrics Update Interval (seconds)": "Intervall für Performance-Metriken (Sekunden)",
+            "Max Items per Lane (Safety Limit)": "Max. Items pro Kanal (Sicherheitslimit)",
             "Local Secrets Module": "Lokales Secrets Modul",
             "Local Server Key (Used by Remote for Actions)": "Lokaler Server-Schlüssel (für Rücksteuerung)",
 
@@ -14,6 +17,8 @@
             "Remote Server Key": "Remote-Server-Schlüssel",
             "Remote Script Root ID": "Remote Script Wurzel-ID",
             "Remote SEC ID": "Remote SEC ID",
+            "Remote Setup": "Remote Setup",
+            "Install Remote": "Remote installieren",
 
             "Step 2: Map Local Roots to Folders": "Schritt 2: Lokale Quellen zu Ordnern zuordnen",
             "Local Source Roots": "Lokale Quell-Wurzeln",
@@ -26,12 +31,13 @@
             "Batch Tools:": "Batch-Werkzeuge:",
             "Sync ALL": "Alle Sync",
             "Sync NONE": "Keine Sync",
+            "Hist ALL": "Hist ALLE",
+            "Hist NONE": "Hist KEINE",
             "Action ALL": "Alle Aktion",
             "Action NONE": "Keine Aktion",
             "Del ALL": "Alle löschen",
             "Del NONE": "Keine löschen",
             "💾 SAVE ALL": "💾 ALLES SPEICHERN",
-            "INSTALL REMOTE": "REMOTE INSTALLIEREN",
             "Force Refresh UI": "UI Aktualisieren",
 
             "Performance Monitoring": "Performance-Überwachung",
@@ -50,19 +56,25 @@
             "ID": "ID",
             "Variable Name": "Variablen-Name",
             "Sync": "Sync",
+            "Full Hist.": "Vollst. Hist.",
             "R-Action": "R-Aktion",
             "Del Rem.": "Remote Löschen",
             "Root": "Wurzel",
 
             "Connecting to remote...": "Verbinde zu Remote...",
             "Remote Variable created:": "Remote Variable erstellt:",
-            "Value pushed:": "Wert übertragen:"
+            "Value pushed:": "Wert übertragen:",
+            "Success": "Erfolgreich",
+            "Error": "Fehler"
         },
         "en": {
             "Global Configuration": "Global Configuration",
             "Debug Mode (Verbose Log)": "Debug Mode (Verbose Log)",
             "Use Auto-Create (Create missing remote objects)": "Use Auto-Create (Create missing remote objects)",
             "Replicate Variable Profiles (local → remote)": "Replicate Variable Profiles (local → remote)",
+            "Parallel Lanes per Server": "Parallel Lanes per Server",
+            "Metrics Update Interval (seconds)": "Metrics Update Interval (seconds)",
+            "Max Items per Lane (Safety Limit)": "Max Items per Lane (Safety Limit)",
             "Local Secrets Module": "Local Secrets Module",
             "Local Server Key (Used by Remote for Actions)": "Local Server Key (Used by Remote for Actions)",
 
@@ -72,6 +84,8 @@
             "Remote Server Key": "Remote Server Key",
             "Remote Script Root ID": "Remote Script Root ID",
             "Remote SEC ID": "Remote SEC ID",
+            "Remote Setup": "Remote Setup",
+            "Install Remote": "Install Remote",
 
             "Step 2: Map Local Roots to Folders": "Step 2: Map Local Roots to Folders",
             "Local Source Roots": "Local Source Roots",
@@ -84,12 +98,13 @@
             "Batch Tools:": "Batch Tools:",
             "Sync ALL": "Sync ALL",
             "Sync NONE": "Sync NONE",
+            "Hist ALL": "Hist ALL",
+            "Hist NONE": "Hist NONE",
             "Action ALL": "Action ALL",
             "Action NONE": "Action NONE",
             "Del ALL": "Del ALL",
             "Del NONE": "Del NONE",
             "💾 SAVE ALL": "💾 SAVE ALL",
-            "INSTALL REMOTE": "INSTALL REMOTE",
             "Force Refresh UI": "Force Refresh UI",
 
             "Performance Monitoring": "Performance Monitoring",
@@ -103,7 +118,17 @@
             "JSON Configuration Data": "JSON Configuration Data",
             "Generate Export": "Generate Export",
             "Execute Import": "Execute Import",
-            "This will overwrite all current settings. Proceed?": "This will overwrite all current settings. Proceed?"
+            "This will overwrite all current settings. Proceed?": "This will overwrite all current settings. Proceed?",
+
+            "ID": "ID",
+            "Variable Name": "Variable Name",
+            "Sync": "Sync",
+            "Full Hist.": "Full Hist.",
+            "R-Action": "R-Action",
+            "Del Rem.": "Del Rem.",
+            "Root": "Root",
+            "Success": "Success",
+            "Error": "Error"
         }
     }
 }
