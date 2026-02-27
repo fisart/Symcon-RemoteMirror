@@ -48,6 +48,10 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('MaxBufferSize', 5000);
         // Timer für Performance-Metriken
         $this->RegisterTimer('UpdatePerformanceTimer', 0, 'RS_PublishPerformanceMetrics($_IPS[\'TARGET\']);');
+
+        // --- WICHTIG: NEU HINZUFÜGEN ---
+        // Damit MessageSink Nachrichten über den Systemstart (Kernel Ready) erhält
+        $this->RegisterMessage(0, IPS_KERNELMESSAGE);
     }
 
 
@@ -402,11 +406,7 @@ class RemoteSync extends IPSModule
 
     public function ApplyChanges()
     {
-        // Best Practice: Warten bis der Kernel bereit ist
-        if (IPS_GetKernelRunlevel() !== KR_READY) {
-            return;
-        }
-
+        // ERROR CORRECTION: Early return removed so RegisterMessage runs during system boot
         parent::ApplyChanges();
 
         // --- SICHERHEITS-RESET (Option A: Klare Verhältnisse) ---
@@ -511,9 +511,12 @@ class RemoteSync extends IPSModule
             $this->SetStatus(104);
         } else {
             $this->SetStatus(102);
-            if ($count > 0 || $hasDeleteTask) {
-                if (!IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");")) {
-                    $this->Log("ProcessSync call failed during initial synchronization.", KL_ERROR);
+            // SAFETY: Script execution only when Kernel is READY (prevents boot errors)
+            if (IPS_GetKernelRunlevel() == KR_READY) {
+                if ($count > 0 || $hasDeleteTask) {
+                    if (!IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");")) {
+                        $this->Log("ProcessSync call failed during initial synchronization.", KL_ERROR);
+                    }
                 }
             }
         }
@@ -574,6 +577,12 @@ class RemoteSync extends IPSModule
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
     {
+        // NEU: Wenn der Kernel meldet "Ich bin fertig", führen wir ApplyChanges nochmal sauber aus
+        if ($Message == IPS_KERNELMESSAGE && $Data[0] == KR_READY) {
+            $this->ApplyChanges();
+            return;
+        }
+
         $t1 = ($SenderID == 25458) ? microtime(true) : 0;
         if ($t1 > 0) $this->LogMessage("TRACE_SINK_START: ID $SenderID at $t1", KL_MESSAGE);
 
