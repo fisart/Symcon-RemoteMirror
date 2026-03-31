@@ -1414,7 +1414,7 @@ if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
 }
 
 \$remoteVarID = \$_IPS['VARIABLE'];
-\$info       = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
+\$info        = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
 
 // Expected format: RS_REF:ServerKey:LocalID
 \$parts = explode(':', \$info);
@@ -1445,15 +1445,28 @@ if (!\$url || !\$user || !\$pw) {
     return;
 }
 
-\$connUrl = 'https://' . urlencode(\$user) . ':' . urlencode(\$pw) . '@' . \$url . '/api/';
+// Normalize target URL: allow host:port, https://host:port, host:port/api, etc.
+\$url = trim(\$url);
+if (!preg_match('~^https?://~i', \$url)) {
+    \$url = 'https://' . \$url;
+}
+\$url = rtrim(\$url, '/');
+if (!preg_match('~/api$~i', \$url)) {
+    \$url .= '/api';
+}
+\$connUrl = \$url . '/';
 
 class RemoteSync_MiniRPC
 {
     private string \$url;
+    private string \$user;
+    private string \$pw;
 
-    public function __construct(string \$url)
+    public function __construct(string \$url, string \$user, string \$pw)
     {
-        \$this->url = \$url;
+        \$this->url  = \$url;
+        \$this->user = \$user;
+        \$this->pw   = \$pw;
     }
 
     public function __call(string \$method, array \$params)
@@ -1465,12 +1478,17 @@ class RemoteSync_MiniRPC
             'id'      => time()
         ]);
 
+        \$headers =
+            \"Content-Type: application/json\\r\\n\" .
+            \"Authorization: Basic \" . base64_encode(\$this->user . ':' . \$this->pw) . \"\\r\\n\";
+
         \$opts = [
             'http' => [
-                'method'  => 'POST',
-                'header'  => 'Content-Type: application/json',
-                'content' => \$payload,
-                'timeout' => 5
+                'method'        => 'POST',
+                'header'        => \$headers,
+                'content'       => \$payload,
+                'timeout'       => 5,
+                'ignore_errors' => true
             ],
             'ssl'  => [
                 'verify_peer'      => false,
@@ -1482,7 +1500,8 @@ class RemoteSync_MiniRPC
         \$result = @file_get_contents(\$this->url, false, \$ctx);
 
         if (\$result === false) {
-            throw new Exception('Connect Fail');
+            \$err = error_get_last();
+            throw new Exception('Connect Fail ' . \$this->url . ' - ' . (\$err['message'] ?? 'unknown'));
         }
 
         \$response = json_decode(\$result, true);
@@ -1494,7 +1513,7 @@ class RemoteSync_MiniRPC
     }
 }
 
-\$rpc = new RemoteSync_MiniRPC(\$connUrl);
+\$rpc = new RemoteSync_MiniRPC(\$connUrl, \$user, \$pw);
 
 try {
     \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
