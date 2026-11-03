@@ -8,6 +8,9 @@
                 { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
                 { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
                 { "type": "NumberSpinner", "name": "LaneCount", "caption": "Parallel Lanes per Server", "minimum": 1, "maximum": 10 },
+                { "type": "NumberSpinner", "name": "BatchIntervalMs", "caption": "Batch window (milliseconds, 0 = immediate)", "minimum": 0, "maximum": 5000 },
+                { "type": "CheckBox", "name": "OnlyChangedValues", "caption": "Skip unchanged ordinary values" },
+                { "type": "Label", "caption": "Immediate: send urgent signals without the batch window and retain every update. Full Hist.: retain every update within batches. Ordinary values keep the latest pending value." },
                 { "type": "NumberSpinner", "name": "MaxBufferSize", "caption": "Max Items per Lane (Safety Limit)", "minimum": 100, "maximum": 50000 },
                 { "type": "NumberSpinner", "name": "PerformanceInterval", "caption": "Metrics Update Interval (seconds)", "minimum": 10, "maximum": 3600 },
                 {
@@ -75,6 +78,9 @@
             "caption": "Performance Monitoring",
             "items": [
                 { "type": "Label", "caption": "Create or remove variables to track latency and batch sizes." },
+                { "type": "Label", "caption": "Traffic counters since reset/runtime start: RPC attempts, JSON request body bytes and secret lookups. No credentials are recorded." },
+                { "type": "Button", "caption": "Show traffic counters", "onClick": "echo RS_GetTrafficStatistics($id);" },
+                { "type": "Button", "caption": "Reset traffic counters", "onClick": "RS_ResetTrafficStatistics($id);" },
                 { 
                     "type": "RowLayout", 
                     "items": [

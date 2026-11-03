@@ -1,29 +1,6 @@
 <?php
 declare(strict_types=1);
-// Exercise the actual worker with in-process Symcon/cURL doubles. No network calls.
-const KR_READY=10103, IPS_KERNELMESSAGE=10100, KL_MESSAGE=0, KL_WARNING=1, KL_ERROR=2;
-foreach(['CURLOPT_URL','CURLOPT_POST','CURLOPT_RETURNTRANSFER','CURLOPT_BINARYTRANSFER','CURLOPT_POSTFIELDS','CURLOPT_HTTPHEADER','CURLOPT_TIMEOUT','CURLOPT_CONNECTTIMEOUT','CURLOPT_SSL_VERIFYPEER','CURLOPT_SSL_VERIFYHOST','CURLOPT_IPRESOLVE','CURL_IPRESOLVE_V4']as$i=>$name)if(!defined($name))define($name,100+$i);
-$GLOBALS['locks']=[];$GLOBALS['jobs']=[];$GLOBALS['reads']=0;$GLOBALS['logs']=[];$GLOBALS['secret']='';$GLOBALS['transportFail']=false;$GLOBALS['dispatchFail']=false;
-class IPSModule {
- public int $InstanceID=321;public array $properties=[],$attributes=[],$timers=[];
- public function Create(){}public function ApplyChanges(){}
- protected function RegisterPropertyBoolean($k,$v){$this->properties[$k]=$v;}protected function RegisterPropertyInteger($k,$v){$this->properties[$k]=$v;}protected function RegisterPropertyString($k,$v){$this->properties[$k]=$v;}
- protected function RegisterAttributeInteger($k,$v){$this->attributes[$k]??=$v;}protected function RegisterAttributeBoolean($k,$v){$this->attributes[$k]??=$v;}protected function RegisterAttributeString($k,$v){$this->attributes[$k]??=$v;}
- protected function ReadPropertyInteger($k){return $this->properties[$k];}protected function ReadPropertyBoolean($k){return $this->properties[$k];}protected function ReadPropertyString($k){return $this->properties[$k];}
- protected function ReadAttributeString($k){return $this->attributes[$k];}protected function WriteAttributeString($k,$v){$this->attributes[$k]=$v;}
- protected function RegisterTimer($k,$v,$s){$this->timers[$k]=$v;}protected function SetTimerInterval($k,$v){$this->timers[$k]=$v;}protected function RegisterMessage($a,$b){}
- protected function LogMessage($m,$severity){$GLOBALS['logs'][]=$m;}
-}
-function IPS_GetKernelRunlevel(){return KR_READY;}
-function IPS_SemaphoreEnter($k,$ms){if($GLOBALS['locks'][$k]??false)return false;return $GLOBALS['locks'][$k]=true;}
-function IPS_SemaphoreLeave($k){$GLOBALS['locks'][$k]=false;}
-function IPS_RunScriptText($s){if($GLOBALS['dispatchFail'])return false;$GLOBALS['jobs'][]=$s;return true;}
-function IPS_LogMessage($sender,$message){$GLOBALS['logs'][]=$message;}
-function SEC_GetSecret($id,$key){$GLOBALS['reads']++;return $GLOBALS['secret'];}
-function curl_init(){return new stdClass();}function curl_setopt_array($h,$options){$GLOBALS['curlOptions']=$options;return true;}
-function curl_exec($h){if(isset($GLOBALS['duringRequest'])){$f=$GLOBALS['duringRequest'];unset($GLOBALS['duringRequest']);$f();}return $GLOBALS['transportFail']?false:json_encode(['result'=>$GLOBALS['rpcResult']??'OK']);}
-function curl_error($h){return 'Synthetic transport failure';}function curl_errno($h){return 7;}function curl_close($h){}
-require $argv[1]??__DIR__.'/../RemoteSync/module.php';
+require __DIR__.'/bootstrap.php';
 $checks=0;$ok=static function($condition,$why)use(&$checks){if(!$condition)throw new RuntimeException($why);++$checks;};
 $m=new RemoteSync();$m->Create();$m->properties['LocalPasswordModuleID']=49800;$m->properties['Targets']='[{"Name":"Peer","RemoteKey":"Connection","RemoteScriptRootID":12345}]';$m->properties['ReplicateProfiles']=false;$m->attributes['_RemoteIDCache']='{"Peer_RX":12345}';
 $seed=static function(array $values)use($m){$m->attributes['_SyncState']=json_encode(['buffer'=>['Peer'=>[1=>$values]],'events'=>[],'starts'=>[]]);};

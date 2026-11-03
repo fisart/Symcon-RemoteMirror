@@ -1,6 +1,6 @@
 # RemoteSync failure retry containment
 
-This test branch is based on `feat/manager-integration` (45db19299c8ff3fab27a826d0d763c1dd36ff95b). It leaves that branch and other installations unchanged until they explicitly select the fix. Existing module/instance IDs, credentials, target/root settings and API call signatures are preserved. Version: 1.12.6.
+This test branch is based on `feat/manager-integration` (45db19299c8ff3fab27a826d0d763c1dd36ff95b). It leaves that branch and other installations unchanged until they explicitly select the fix. Existing module/instance IDs, credentials, target/root settings and API call signatures are preserved. Version: 1.13.0. This version also introduces [traffic reduction settings](traffic-reduction.md), enabled by default.
 
 A refused `SEC_GetSecret()` returned no connection record. The original worker requeued its packet in `catch`, then unconditionally scheduled itself again in `finally`, without any delay. This reproduces an unbounded retry and log flood. It is a plausible contributor to reported overload, not evidence of the cause of a host/process crash.
 

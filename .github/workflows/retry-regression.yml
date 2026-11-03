@@ -1,9 +1,9 @@
-name: RemoteSync retry containment
+name: RemoteSync delivery and traffic
 on:
   push:
     branches: [fix/secrets-read-retry-storm]
   pull_request:
-    paths: ['RemoteSync/**', 'tests/retry-regression.php', '.github/workflows/retry-regression.yml']
+    paths: ['RemoteSync/**', 'tests/**', '.github/workflows/retry-regression.yml']
 permissions:
   contents: read
 jobs:
@@ -22,3 +22,4 @@ jobs:
           coverage: none
       - run: php -l RemoteSync/module.php
       - run: php -n tests/retry-regression.php
+      - run: php -n tests/traffic-regression.php
