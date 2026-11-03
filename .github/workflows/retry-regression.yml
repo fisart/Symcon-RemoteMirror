@@ -1,0 +1,25 @@
+name: RemoteSync delivery and traffic
+on:
+  push:
+    branches: [fix/secrets-read-retry-storm]
+  pull_request:
+    paths: ['RemoteSync/**', 'tests/**', '.github/workflows/retry-regression.yml']
+permissions:
+  contents: read
+jobs:
+  retry:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        php: ['8.2', '8.5']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - run: php -l RemoteSync/module.php
+      - run: php -n tests/retry-regression.php
+      - run: php -n tests/traffic-regression.php
