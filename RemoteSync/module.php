@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-// Version 1.12.4
+// Version 1.12.6
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.12.4';
+    const VERSION = '1.12.6';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -48,6 +48,7 @@ class RemoteSync extends IPSModule
         $this->RegisterPropertyInteger('MaxBufferSize', 5000);
         // Timer für Performance-Metriken
         $this->RegisterTimer('UpdatePerformanceTimer', 0, 'RS_PublishPerformanceMetrics($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FailedBatchRetry', 0, 'RS_RetryFailedBatches($_IPS[\'TARGET\']);');
 
         // --- WICHTIG: NEU HINZUFÜGEN ---
         // Damit MessageSink Nachrichten über den Systemstart (Kernel Ready) erhält
@@ -522,6 +523,8 @@ class RemoteSync extends IPSModule
         }
 
         $this->SetTimerInterval('UpdatePerformanceTimer', $this->ReadPropertyInteger('PerformanceInterval') * 1000);
+        $retryState=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+        $this->SetTimerInterval('FailedBatchRetry',empty($retryState['retry'])?0:5000);
     }
 
     public function RequestAction($Ident, $Value)
@@ -784,7 +787,8 @@ class RemoteSync extends IPSModule
                     $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $laneID;
 
                     // Wir prüfen, ob die Semaphore für DIESE Lane bereits belegt ist
-                    if (IPS_SemaphoreEnter($lockName, 0)) {
+                    $retryState=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+                    if (($retryState['retry'][$folderName][$laneID]['after'] ?? 0)<=time() && IPS_SemaphoreEnter($lockName, 0)) {
                         IPS_SemaphoreLeave($lockName);
 
                         // Übergabe der LaneID an den Worker
@@ -1019,6 +1023,41 @@ class RemoteSync extends IPSModule
     }
 
 
+    private function ScheduleFailedBatch(string $folder,int $lane): void
+    {
+        $lock='RS_StateLock_'.$this->InstanceID;if(!IPS_SemaphoreEnter($lock,2000))return;
+        try{$state=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+            $attempt=min(6,(int)($state['retry'][$folder][$lane]['attempts']??0)+1);
+            $state['retry'][$folder][$lane]=['after'=>time()+min(60,5*(2**($attempt-1))),'attempts'=>$attempt];
+            $this->WriteAttributeString('_SyncState',json_encode($state));$this->SetTimerInterval('FailedBatchRetry',5000);
+        }finally{IPS_SemaphoreLeave($lock);}
+    }
+    private function ClearFailedBatch(string $folder,int $lane): void
+    {
+        $lock='RS_StateLock_'.$this->InstanceID;if(!IPS_SemaphoreEnter($lock,1000))return;
+        try{$state=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+            unset($state['retry'][$folder][$lane]);if(empty($state['retry'][$folder]))unset($state['retry'][$folder]);
+            $this->WriteAttributeString('_SyncState',json_encode($state));if(empty($state['retry']))$this->SetTimerInterval('FailedBatchRetry',0);
+        }finally{IPS_SemaphoreLeave($lock);}
+    }
+    public function RetryFailedBatches(): void
+    {
+        if(IPS_GetKernelRunlevel()!==KR_READY)return;
+        $lock='RS_StateLock_'.$this->InstanceID;$jobs=[];if(!IPS_SemaphoreEnter($lock,1000))return;
+        try{$state=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+            foreach($state['retry']??[]as$folder=>$lanes){foreach($lanes as$lane=>$retry){
+                if(empty($state['buffer'][$folder][$lane])){unset($state['retry'][$folder][$lane]);continue;}
+                // Zero reserves an already dispatched retry; only failure can schedule it again.
+                if(($retry['after']??0)>0&&$retry['after']<=time()){$jobs[]=[(string)$folder,(int)$lane];$state['retry'][$folder][$lane]['after']=0;}
+            }if(empty($state['retry'][$folder]))unset($state['retry'][$folder]);}
+            $this->WriteAttributeString('_SyncState',json_encode($state));if(empty($state['retry']))$this->SetTimerInterval('FailedBatchRetry',0);
+        }finally{IPS_SemaphoreLeave($lock);}
+        foreach($jobs as[$folder,$lane]){
+            $script='RS_FlushBuffer('.$this->InstanceID.', '.var_export($folder,true).', '.$lane.');';
+            if(!IPS_RunScriptText($script))$this->ScheduleFailedBatch($folder,$lane);
+        }
+    }
+
     public function FlushBuffer(string $FolderName = "", int $LaneID = 1)
     {
         if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
@@ -1034,7 +1073,10 @@ class RemoteSync extends IPSModule
             return;
         }
 
+        $mayYield=false;$failed=false;$variables=[];
         try {
+            $retryState=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
+            if(($retryState['retry'][$FolderName][$LaneID]['after'] ?? 0)>time())return;
             // --- NEU v1.6.4: State-Lock für atomares Auslesen und Leeren des Puffers ---
             $stateLock = "RS_StateLock_" . $this->InstanceID;
             $variables = [];
@@ -1051,8 +1093,6 @@ class RemoteSync extends IPSModule
 
                     // ÄNDERUNG v1.9.0: Zugriff auf das Lane-spezifische Segment
                     if (!isset($state['buffer'][$FolderName][$LaneID]) || count($state['buffer'][$FolderName][$LaneID]) === 0) {
-                        IPS_SemaphoreLeave($stateLock);
-                        IPS_SemaphoreLeave($lockName);
                         return;
                     }
 
@@ -1145,7 +1185,7 @@ class RemoteSync extends IPSModule
 
             // Falls das Skript fehlt, geben wir einen Hinweis aus
             if ($receiverID === 0) {
-                $this->Log("RemoteSync Error: Receiver script not found on '" . $FolderName . "'. Please run 'Install Remote' in Step 1.", KL_ERROR);
+                throw new RuntimeException("Receiver script unavailable on '" . $FolderName . "'. Run 'Install Remote' in Step 1.");
             }
 
             if ($receiverID > 0 && $this->rpcClient) {
@@ -1174,7 +1214,9 @@ class RemoteSync extends IPSModule
                     }
                 }
             }
-        } catch (Exception $e) {
+            $this->ClearFailedBatch($FolderName,$LaneID);$mayYield=true;
+        } catch (Throwable $e) {
+            $failed=true;
             $this->Log("[BUFFER-CHECK] FlushBuffer Recovery Lane $LaneID: " . $e->getMessage(), KL_ERROR);
 
             // --- RECOVERY LOGIK v1.12.0 (Prepend für korrekte Chronologie) ---
@@ -1182,10 +1224,9 @@ class RemoteSync extends IPSModule
                 try {
                     $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
 
-                    // Wir nutzen den Union-Operator (+), um die gescheiterten Items VORNE anzufügen.
-                    // Dabei überschreiben wir NICHTS, was in der Zwischenzeit neuer reingekommen ist.
+                    // Keep the failed batch first, while retaining newer values received in flight.
                     $currentLaneBuffer = $state['buffer'][$FolderName][$LaneID] ?? [];
-                    $state['buffer'][$FolderName][$LaneID] = $variables + $currentLaneBuffer;
+                    $state['buffer'][$FolderName][$LaneID] = array_replace($variables, $currentLaneBuffer);
 
                     $this->WriteAttributeString('_SyncState', json_encode($state));
 
@@ -1198,12 +1239,13 @@ class RemoteSync extends IPSModule
                 }
             }
         } finally {
+            if($failed)$this->ScheduleFailedBatch($FolderName,$LaneID);
             IPS_SemaphoreLeave($lockName);
 
             // Yield-Check (v1.9.0: Prüft gezielt die eigene Lane und reicht die LaneID weiter)
             $checkState = json_decode($this->ReadAttributeString('_SyncState'), true);
-            if (isset($checkState['buffer'][$FolderName][$LaneID]) && count($checkState['buffer'][$FolderName][$LaneID]) > 0) {
-                $script = "RS_FlushBuffer(" . $this->InstanceID . ", '" . $FolderName . "', " . $LaneID . ");";
+            if ($mayYield && isset($checkState['buffer'][$FolderName][$LaneID]) && count($checkState['buffer'][$FolderName][$LaneID]) > 0) {
+                $script = "RS_FlushBuffer(" . $this->InstanceID . ", " . var_export($FolderName,true) . ", " . $LaneID . ");";
                 if (!IPS_RunScriptText($script)) {
                     $this->Log("Yield-Check: Failed to start next worker chunk for server '$FolderName' Lane $LaneID.", KL_ERROR);
                 }
@@ -1656,3 +1698,4 @@ class RemoteSync_RPCClient
         return $response['result'] ?? null;
     }
 }
+
