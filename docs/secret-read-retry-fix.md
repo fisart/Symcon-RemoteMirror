@@ -10,8 +10,8 @@ This does not fix missing/denied credentials, change secret permissions, restore
 
 For the affected test installation:
 
-1. Update SymconSecrets on `migration/legacy-sec-replacement` to obtain pure JSON-safe read failures, automatic delayed native binding, bounded logs, and the **Show native connection status** control.
-2. Select `fix/secrets-read-retry-storm` for the Remote Mirror library in Module Control and update it. Do not recreate instances, reinstall remote scripts, change target mappings or clear buffers as part of applying this fix.
+1. Select `fix/secrets-read-retry-storm` for the Remote Mirror library in Module Control and update it first to contain the immediate retry loop. Keep existing instances, remote scripts, mappings and pending buffers.
+2. Update SymconSecrets on `migration/legacy-sec-replacement` to obtain pure JSON-safe read failures, automatic delayed native binding, bounded logs, and the **Show native connection status** control.
 3. Check the native connection/access status in the existing Secrets instance. Explicit revocations, identity changes and pending settings still require resolution; they are never silently overridden.
 4. Verify that failed lanes retry with delay, queues drain after successful credential access/connection recovery, and fresh values reach their expected target. Capture kernel/Symcon/container logs separately if investigating the reported crash.
 
