@@ -2,11 +2,17 @@
 
 declare(strict_types=1);
 
-// Version 1.13.0
+require_once __DIR__ . '/../libs/Transport.php';
+require_once __DIR__ . '/Delivery.php';
+require_once __DIR__ . '/Provision.php';
+require_once __DIR__ . '/Configuration.php';
+require_once __DIR__ . '/Administration.php';
 
 class RemoteSync extends IPSModule
 {
-    const VERSION = '1.13.0';
+    use RemoteSyncDelivery, RemoteSyncProvision, RemoteSyncConfiguration, RemoteSyncAdministration;
+
+    const VERSION = '1.14.0';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -17,6 +23,13 @@ class RemoteSync extends IPSModule
     public function Create()
     {
         parent::Create();
+        $this->createAdministration();
+        $this->RegisterPropertyBoolean('SyncEnabled', true);
+        $this->RegisterPropertyInteger('RequestTimeout', 120);
+        $this->RegisterAttributeString('SourceIdentity', '');
+        $this->RegisterAttributeString('_DeliveryLanes', '{}');
+        $this->RegisterAttributeString('_DeliveryRetry', '{}');
+        $this->RegisterTimer('ProvisionTargets', 0, 'RS_ProvisionTargets($_IPS["TARGET"]);');
 
         $this->rpcClient = null;
         $this->config = [];
@@ -82,8 +95,12 @@ class RemoteSync extends IPSModule
         // 1. SEC-Keys für Dropdowns abrufen
         $serverOptions = [['caption' => "Please select...", 'value' => ""]];
         if ($secID > 0 && IPS_InstanceExists($secID) && function_exists('SEC_GetKeys')) {
-            $keys = json_decode(SEC_GetKeys($secID), true);
-            if (is_array($keys)) foreach ($keys as $k) $serverOptions[] = ['caption' => (string)$k, 'value' => (string)$k];
+            try {
+                $keys = json_decode(SEC_GetKeys($secID), true);
+                foreach (is_array($keys) ? $keys : [] as $k) $serverOptions[] = ['caption' => (string)$k, 'value' => (string)$k];
+            } catch (Throwable $e) {
+                $this->Log('Secrets list unavailable. Check the read approval for this instance.', KL_WARNING);
+            }
         }
 
         // 2. Folder-Namen für Dropdowns abrufen
@@ -139,6 +156,7 @@ class RemoteSync extends IPSModule
             // Eindeutige ID für dieses Mapping (Folder + Root)
             $mappingID = md5($folderName . $localRootID);
             $listName  = "List_" . $mappingID;
+            $quotedFolder = var_export($folderName, true);
             $onEdit    = "IPS_RequestAction(\$id, 'UpdateRow', json_encode(\$$listName));";
 
             $form['actions'][] = [
@@ -151,23 +169,23 @@ class RemoteSync extends IPSModule
                             ["type" => "Label", "caption" => "Batch Tools:", "bold" => true, "width" => "90px"],
 
                             // Sync Gruppe
-                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, '$folderName', $localRootID);", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Sync ALL", "onClick" => "RS_ToggleAll(\$id, 'Active', true, $quotedFolder, $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Sync NONE", "onClick" => "RS_ToggleAll(\$id, 'Active', false, $quotedFolder, $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // NEU v1.6.2: History Gruppe
-                            ["type" => "Button", "caption" => "Hist ALL", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', true, '$folderName', $localRootID);", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Hist NONE", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Hist ALL", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', true, $quotedFolder, $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Hist NONE", "onClick" => "RS_ToggleAll(\$id, 'FullHistory', false, $quotedFolder, $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // Action Gruppe
-                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, '$folderName', $localRootID);", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Action ALL", "onClick" => "RS_ToggleAll(\$id, 'Action', true, $quotedFolder, $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Action NONE", "onClick" => "RS_ToggleAll(\$id, 'Action', false, $quotedFolder, $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // Delete Gruppe
-                            ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, '$folderName', $localRootID);", "width" => "85px"],
-                            ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, '$folderName', $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Del ALL", "onClick" => "RS_ToggleAll(\$id, 'Delete', true, $quotedFolder, $localRootID);", "width" => "85px"],
+                            ["type" => "Button", "caption" => "Del NONE", "onClick" => "RS_ToggleAll(\$id, 'Delete', false, $quotedFolder, $localRootID);", "width" => "85px"],
                             ["type" => "Label", "caption" => "|", "width" => "15px"],
 
                             // Management & Installation
@@ -211,6 +229,7 @@ class RemoteSync extends IPSModule
     {
         // Alle Timer sicher stoppen
 
+        $this->removeWebHook();
         parent::Destroy();
     }
 
@@ -286,252 +305,53 @@ class RemoteSync extends IPSModule
     }
 
     // --- INSTALLATION ---
+    /** Compatibility entry point used by existing form buttons and scripts. */
     public function InstallRemoteScripts(string $Folder)
     {
-        $this->SendDebug("RS_Install", "Button clicked for Folder: " . $Folder, 0);
-
-        $target = $this->GetTargetConfig($Folder);
-        if (!$target) {
-            $this->SendDebug("RS_Error", "Could not find config for folder name: " . $Folder, 0);
-            echo "Error: Configuration for '$Folder' not found.";
-            return;
-        }
-
-        $this->SendDebug("RS_Install", "Target Config found. Key: " . $target['RemoteKey'], 0);
-
-        if (!$this->InitConnectionForFolder($target)) {
-            $this->SendDebug("RS_Error", "Connection establishment failed.", 0);
-            echo "Error: Connection failed. Check SEC-Key and SEC-Instance.";
-            return;
-        }
-
-        $this->SendDebug("RS_Install", "Connection established. Attempting to locate/create scripts...", 0);
-
-        $scriptRoot = (int)$target['RemoteScriptRootID'];
-        $remoteSecID = (int)$target['RemoteSecretsID'];
-
         try {
-            // Wir nutzen jetzt die stabilen Idents RS_Gateway und RS_Receiver
-            $gwID = $this->FindRemoteScript($scriptRoot, "RS_Gateway");
-            $this->SendDebug("RS_Install", "Gateway Script located/created at ID: " . $gwID, 0);
-
-            $gwCode = $this->GenerateGatewayCode($remoteSecID);
-            $this->rpcClient->IPS_SetScriptContent($gwID, $gwCode);
-
-            $rxID = $this->FindRemoteScript($scriptRoot, "RS_Receiver");
-            $this->SendDebug("RS_Install", "Receiver Script located/created at ID: " . $rxID, 0);
-
-            $this->rpcClient->IPS_SetScriptContent($rxID, $this->GenerateReceiverCode($gwID));
-
-            $this->SendDebug("RS_Install", "Scripts successfully updated on Remote System.", 0);
-
-            // ID im persistenten Cache speichern
-            $idCache = json_decode($this->ReadAttributeString('_RemoteIDCache'), true) ?: [];
-            $idCache[$Folder . '_RX'] = $rxID;
-            $idCache[$Folder . '_GW'] = $gwID;
-            $this->WriteAttributeString('_RemoteIDCache', json_encode($idCache));
-            echo "Success: Scripts installed on $Folder (Ident-based)";
-        } catch (Exception $e) {
-            $this->SendDebug("RS_Error", "Exception during Install: " . $e->getMessage(), 0);
-            echo "Error: " . $e->getMessage();
+            $target = $this->GetTargetConfig($Folder);
+            if (!$target || !$this->InitConnectionForFolder($target)) throw new RuntimeException('Target connection unavailable.');
+            $this->SetBuffer('Companion_' . hash('sha256', $Folder), '');
+            $this->receiverFor($Folder, $target);
+            echo 'Success: destination companion verified.';
+        } catch (Throwable $e) {
+            echo 'Error: ' . $e->getMessage();
         }
     }
 
-    private function FindRemoteScript(int $parentID, string $ident): int
-    {
-        // 1. ABSOLUTE SUCHE: Wer hat diesen Ident?
-        try {
-            $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
-            if ($id > 0) {
-                // PRÜFUNG: Ist es wirklich ein Skript? (ObjectType 3)
-                $obj = $this->rpcClient->IPS_GetObject($id);
-                if ($obj['ObjectType'] == 3) {
-                    return $id;
-                } else {
-                    // Der Ident ist belegt, aber durch ein falsches Objekt!
-                    $this->Log("Critical Error: Ident '$ident' is already used by a non-script object. Please delete it on remote system.", KL_ERROR);
-                    return 0;
-                }
-            }
-        } catch (Exception $e) {
-            // Nicht gefunden über Ident, wir machen weiter
-        }
-
-        // 2. NAMENS-FALLBACK (Heilung alter Installationen)
-        try {
-            $possibleNames = ($ident === 'RS_Gateway')
-                ? ['RemoteSync_Gateway', 'RemoteSync Gateway']
-                : ['RemoteSync_Receiver', 'RemoteSync Receiver'];
-
-            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
-            if (is_array($children)) {
-                foreach ($children as $cID) {
-                    $obj = $this->rpcClient->IPS_GetObject($cID);
-
-                    if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
-                        try {
-                            $this->rpcClient->IPS_SetIdent($cID, $ident);
-                            $this->rpcClient->IPS_SetName($cID, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
-                            return $cID;
-                        } catch (Exception $eIdent) {
-                            // Falls das Setzen des Idents hier scheitert, nutzen wir das Skript trotzdem
-                            return $cID;
-                        }
-                    }
-                }
-            }
-        } catch (Exception $e) {
-            // Fehler beim Durchlaufen der Kinder
-        }
-
-        // 3. NEUERSTELLUNG mit Sicherheitsbremse gegen leere Dubletten (v1.7.8)
-        try {
-            $id = $this->rpcClient->IPS_CreateScript(0);
-            $this->rpcClient->IPS_SetParent($id, $parentID);
-            $this->rpcClient->IPS_SetName($id, ($ident === 'RS_Gateway' ? 'RemoteSync Gateway' : 'RemoteSync Receiver'));
-
-            try {
-                $this->rpcClient->IPS_SetIdent($id, $ident);
-                return $id;
-            } catch (Exception $eIdent) {
-                // --- KORREKTUR v1.7.8: Sicherheits-Löschung ---
-                // Der Ident ist blockiert. Wir löschen das neue leere Skript sofort wieder,
-                // damit keine Geister-Skripte ohne Inhalt entstehen.
-                $this->rpcClient->IPS_DeleteScript($id, true);
-
-                // Letzter Versuch: Wir holen uns die ID des Objekts, das den Ident blockiert
-                $existingID = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
-                $this->Log("Notice: Ident '$ident' was blocked. Using existing object ID $existingID instead.", KL_MESSAGE);
-                return $existingID;
-            }
-        } catch (Exception $e) {
-            $this->Log("FindRemoteScript Final Failure: " . $e->getMessage(), KL_ERROR);
-            return 0;
-        }
-    }
     // --- RUNTIME ---
 
     public function ApplyChanges()
     {
-        // ERROR CORRECTION: Early return removed so RegisterMessage runs during system boot
         parent::ApplyChanges();
-
-        // --- SICHERHEITS-RESET (Option A: Klare Verhältnisse) ---
-        $this->rpcClient = null;
         $this->config = [];
-
-        // --- NACHRICHTEN-CLEANUP ---
-        $messages = $this->GetMessageList();
-        foreach ($messages as $senderID => $messageID) {
-            $this->UnregisterMessage($senderID, VM_UPDATE);
+        $this->rpcClient = null;
+        $this->RegisterMessage(0, IPS_KERNELMESSAGE);
+        foreach ($this->GetMessageList() as $sender => $messages) {
+            if ($sender > 0) $this->UnregisterMessage($sender, VM_UPDATE);
         }
-
-        // --- SELBSTHEILUNG SCHRITT 1: ROOTS (Step 2) BEREINIGEN ---
-        $rootsRaw = $this->ReadPropertyString("Roots");
-        $roots = json_decode($rootsRaw, true) ?: [];
-        $cleanedRoots = [];
-        $rootsChanged = false;
-
-        foreach ($roots as $root) {
-            $rID = (int)($root['LocalRootID'] ?? 0);
-            if ($rID > 0 && IPS_ObjectExists($rID)) {
-                $cleanedRoots[] = $root;
-            } else {
-                $this->Log("Self-Healing: Removing dead Root ID $rID from configuration.", KL_WARNING);
-                $rootsChanged = true;
-            }
+        if (IPS_GetKernelRunlevel() !== KR_READY) return;
+        $this->initializeDelivery();
+        $this->applyAdministration();
+        $enabled = $this->ReadPropertyBoolean('SyncEnabled');
+        $work = false;
+        foreach (json_decode($this->ReadAttributeString('SyncListCache'), true) ?: [] as $row) {
+            $id = (int)($row['ObjectID'] ?? 0);
+            if (!$id || !IPS_ObjectExists($id)) continue;
+            if (!empty($row['Active']) && empty($row['Delete']) && $enabled) $this->RegisterMessage($id, VM_UPDATE);
+            $work = $work || !empty($row['Active']) || !empty($row['Delete']);
         }
-
-        if ($rootsChanged) {
-            IPS_SetProperty($this->InstanceID, "Roots", json_encode($cleanedRoots));
-            // Wir arbeiten intern sofort mit der bereinigten Liste weiter
-        }
-        $roots = $cleanedRoots;
-
-        // --- KONSISTENZ-PRÜFUNG DER KONFIGURATION (Step 3) ---
-        $syncListRaw = $this->ReadAttributeString("SyncListCache");
-
-        $syncList = json_decode($syncListRaw, true) ?: [];
-        // Hinweis: $roots ist hier bereits die bereinigte Liste aus Schritt 1
-
-        $cleanedSyncList = [];
-        $uniqueCheck = [];
-        $count = 0;
-        $hasDeleteTask = false;
-
-        foreach ($syncList as $item) {
-            $vID = (int)($item['ObjectID'] ?? 0);
-            $folder = $item['Folder'] ?? '';
-            $rootID = (int)($item['LocalRootID'] ?? 0);
-
-            // SELBSTHEILUNG: Nur weitermachen, wenn das Objekt wirklich existiert
-            if ($vID === 0 || !IPS_ObjectExists($vID)) {
-                $this->Log("Consistency Check: Removing ID $vID - Object no longer exists.", KL_WARNING);
-                continue;
-            }
-
-            $mappingIsValid = false;
-            foreach ($roots as $r) {
-                if (($r['TargetFolder'] ?? '') === $folder && (int)($r['LocalRootID'] ?? 0) === $rootID) {
-                    if ($this->IsChildOf($vID, $rootID)) {
-                        $mappingIsValid = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!$mappingIsValid) {
-                // SELBSTHEILUNG: Verwaiste Variablen (deren Root gelöscht wurde) werden hier entfernt
-                $this->Log("Consistency Check: Dropping ID $vID - Mapping or hierarchy changed.", KL_WARNING);
-                continue;
-            }
-
-            $key = $folder . '_' . $rootID . '_' . $vID;
-            if (isset($uniqueCheck[$key])) {
-                continue;
-            }
-            $uniqueCheck[$key] = true;
-
-            $isDelete = !empty($item['Delete']);
-            $isActive = !empty($item['Active']);
-
-            if ($isDelete) {
-                $hasDeleteTask = true;
-            }
-
-            if ($isActive && !$isDelete) {
-                // --- NEUE DEBUG SONDE FÜR ID 25458 ---
-                if ($vID == 25458) {
-                    $this->LogMessage("DEBUG_25458: ApplyChanges - RegisterMessage executed for variable 25458", KL_MESSAGE);
-                }
-                // -------------------------------------
-                $this->RegisterMessage($vID, VM_UPDATE);
-                $count++;
-            }
-            $cleanedSyncList[] = $item;
-        }
-
-        $this->WriteAttributeString("SyncListCache", json_encode($cleanedSyncList));
-
-        // --- STATUS & INITIALER SYNC ---
-        if ($count === 0 && !$hasDeleteTask && $this->ReadPropertyInteger('LocalPasswordModuleID') == 0) {
-            $this->SetStatus(104);
+        $this->migrateDelivery();
+        $this->SetStatus($enabled && ($work || $this->ReadPropertyInteger('LocalPasswordModuleID')) ? 102 : 104);
+        $this->SetTimerInterval('UpdatePerformanceTimer', max(10, $this->ReadPropertyInteger('PerformanceInterval')) * 1000);
+        $this->SetTimerInterval('FailedBatchRetry', 0);
+        $this->SetTimerInterval('ProvisionTargets', $enabled && json_decode($this->ReadPropertyString('Targets'), true) ? 1000 : 0);
+        if ($enabled) {
+            $this->DispatchPendingBatches();
+            if ($work) IPS_RunScriptText('RS_ProcessSync(' . $this->InstanceID . ');');
         } else {
-            $this->SetStatus(102);
-            // SAFETY: Script execution only when Kernel is READY (prevents boot errors)
-            if (IPS_GetKernelRunlevel() == KR_READY) {
-                if ($count > 0 || $hasDeleteTask) {
-                    if (!IPS_RunScriptText("RS_ProcessSync(" . $this->InstanceID . ");")) {
-                        $this->Log("ProcessSync call failed during initial synchronization.", KL_ERROR);
-                    }
-                }
-            }
+            $this->SetTimerInterval('BatchDispatch', 0);
         }
-
-        $this->SetTimerInterval('UpdatePerformanceTimer', $this->ReadPropertyInteger('PerformanceInterval') * 1000);
-        $retryState=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
-        $this->SetTimerInterval('FailedBatchRetry',empty($retryState['retry'])?0:5000);
-        $this->DispatchPendingBatches();
     }
 
     public function RequestAction($Ident, $Value)
@@ -599,17 +419,6 @@ class RemoteSync extends IPSModule
         $this->AddToBuffer($SenderID, $Data[0], $unchanged);
     }
 
-    public function ProcessSync()
-    {
-        if (!$this->LoadConfig()) return;
-
-        foreach ($this->config['SyncList'] as $item) {
-            if (!empty($item['Active']) || !empty($item['Delete'])) {
-                $this->AddToBuffer((int)$item['ObjectID']);
-            }
-        }
-    }
-
 
     private function GetTargetConfig(string $FolderName)
     {
@@ -627,7 +436,7 @@ class RemoteSync extends IPSModule
         $remoteRootID = 0;
 
         foreach ($roots as $root) {
-            if (($root['TargetFolder'] ?? '') === $folderName) {
+            if (($root['TargetFolder'] ?? '') === $folderName && (int)$root['LocalRootID'] === (int)($itemConfig['LocalRootID'] ?? 0)) {
                 if ($this->IsChildOf($localID, (int)$root['LocalRootID'])) {
                     $localRootID = (int)$root['LocalRootID'];
                     $remoteRootID = (int)$root['RemoteRootID'];
@@ -655,6 +464,9 @@ class RemoteSync extends IPSModule
         $finalValue = ($Value !== null) ? $Value : GetValue($localID);
 
         return [
+            'Source'       => $this->ReadAttributeString('SourceIdentity'),
+            'MappingID'    => hash('sha256', $folderName . '|' . $localRootID . '|' . $remoteRootID),
+            'EventID'      => bin2hex(random_bytes(16)),
             'LocalID'      => $localID,
             'Timestamp'    => microtime(true),
             'LocalSetID'   => $localRootID, // Identifikator für die Performance-Variable
@@ -674,136 +486,21 @@ class RemoteSync extends IPSModule
 
     private function InitConnectionForFolder(array $target): bool
     {
-        $secID = $this->ReadPropertyInteger('LocalPasswordModuleID');
-        $key = $target['RemoteKey'] ?? '';
-
-        if ($secID == 0 || $key === '') return false;
-
         try {
-            if (!function_exists('SEC_GetSecret')) return false;
+            $vault = (int)($target['_SecretsID'] ?? $this->ReadPropertyInteger('LocalPasswordModuleID'));
+            if (!$vault || empty($target['RemoteKey']) || !function_exists('SEC_GetSecret')) throw new RuntimeException('Missing Secrets reference.');
             $this->CountTraffic(['SecretLookups' => 1]);
-            $json = SEC_GetSecret($secID, $key);
-            $config = json_decode($json, true);
-            if (!is_array($config)) return false;
-
-            $urlRaw = $config['URL'] ?? $config['url'] ?? $config['Url'] ?? '';
-            $user   = $config['User'] ?? $config['user'] ?? $config['Username'] ?? '';
-            $pw     = $config['PW'] ?? $config['pw'] ?? $config['Password'] ?? '';
-
-            if ($urlRaw === '') return false;
-
-            $connectionUrl = 'https://' . urlencode($user) . ":" . urlencode($pw) . "@" . $urlRaw . "/api/";
-            $this->rpcClient = new RemoteSync_RPCClient($connectionUrl, function (int $bytes): void {
-                $this->CountTraffic(['RPCRequests' => 1, 'RequestBodyBytes' => $bytes]);
+            $credentials = RemoteSyncConnectionV2::credentials(SEC_GetSecret($vault, $target['RemoteKey']));
+            $this->rpcClient = new RemoteSync_RPCClient($credentials, $this->ReadPropertyInteger('RequestTimeout'), function ($size) {
+                $this->CountTraffic(['RPCRequests' => 1, 'RequestBodyBytes' => $size]);
             });
             return true;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->rpcClient = null;
+            $this->Log('Cannot read target connection. Check Secrets read approval and the HTTPS address.', KL_ERROR);
             return false;
         }
     }
-
-    private function AddToBuffer($localID, $Value = null, bool $unchanged = false)
-    {
-        if (IPS_GetKernelRunlevel() !== KR_READY || !$this->LoadConfig()) return;
-
-        // --- NEU v1.9.0: Lane-Berechnung ---
-        $laneCount = $this->ReadPropertyInteger('LaneCount');
-        if ($laneCount < 1) $laneCount = 1;
-        $laneID = ($localID % $laneCount) + 1;
-        $maxLimit = $this->ReadPropertyInteger('MaxBufferSize'); // NEU v1.12.0
-        // -----------------------------------
-
-        foreach ($this->config['SyncList'] as $item) {
-            if ($item['ObjectID'] == $localID && (!empty($item['Active']) || !empty($item['Delete']))) {
-                $keepEveryUpdate = !empty($item['FullHistory']) || !empty($item['Immediate']);
-                $immediate = !empty($item['Immediate']) || !empty($item['Delete']);
-                if ($unchanged && $this->ReadPropertyBoolean('OnlyChangedValues') && !$keepEveryUpdate && empty($item['Delete'])) {
-                    $this->CountTraffic(['FilteredUpdates' => 1]);
-                    continue;
-                }
-
-                $folderName = $item['Folder'] ?? 'Unknown';
-                $payload = $this->GetPayload((int)$localID, $item, $this->config['Roots'], $Value);
-
-                if ($payload) {
-                    // --- NEU v1.6.4: State-Lock zur Vermeidung von Race Conditions ---
-                    $stateLock = "RS_StateLock_" . $this->InstanceID;
-                    // Wir warten maximal 1000ms auf den Zugriff (RAM-Operationen sind extrem schnell)
-                    if (IPS_SemaphoreEnter($stateLock, 1000)) {
-                        try {
-                            $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
-
-                            // --- NEU v1.11.4: Robuste Initialisierung gegen Scalar-Errors ---
-                            if (!isset($state['buffer'][$folderName]) || !is_array($state['buffer'][$folderName])) $state['buffer'][$folderName] = [];
-                            if (!isset($state['events'][$folderName]) || !is_array($state['events'][$folderName])) $state['events'][$folderName] = [];
-                            if (!isset($state['starts'][$folderName]) || !is_array($state['starts'][$folderName])) $state['starts'][$folderName] = [];
-                            // ----------------------------------------------------------------
-
-                            $bufferKey = $keepEveryUpdate ? $localID . '_' . bin2hex(random_bytes(12)) : (string)$localID;
-                            // A newer state may replace an existing entry even at capacity.
-                            if (count($state['buffer'][$folderName][$laneID] ?? []) >= $maxLimit && !isset($state['buffer'][$folderName][$laneID][$bufferKey])) {
-                                $this->Log("[BUFFER-OVERFLOW] Server $folderName Lane $laneID reached limit ($maxLimit). Dropping event.", KL_WARNING);
-                                $this->CountTraffic(['DroppedUpdates' => 1]);
-                                continue;
-                            }
-                            // ---------------------------------------------------------
-
-                            // --- NEU v1.9.1: Automatische Struktur-Migration (Fix für Fatal Error) ---
-                            if (!empty($state['buffer'][$folderName])) {
-                                $firstElement = reset($state['buffer'][$folderName]);
-                                // Wenn das erste Element das Feld 'LocalID' hat, ist es noch das v1.8 Format
-                                if (is_array($firstElement) && isset($firstElement['LocalID'])) {
-                                    $state['buffer'][$folderName] = []; // Puffer für diesen Folder leeren
-                                    $state['events'][$folderName] = []; // Events für diesen Folder leeren
-                                    $state['starts'][$folderName] = []; // Zeitstempel für diesen Folder leeren
-                                }
-                            }
-
-                            // --- NEU v1.11.6/1.12.0: Eindeutige Keys für Full History ---
-                            $wasEmpty = empty($state['buffer'][$folderName][$laneID]);
-
-                            // --- NEU v1.8.7: Zeitstempel-Schutz (Timestamp Preservation) ---
-                            // ÄNDERUNG v1.9.0: Pfad inkludiert jetzt die laneID
-                            if (isset($state['buffer'][$folderName][$laneID][$bufferKey]['Timestamp'])) {
-                                $this->CountTraffic(['CoalescedUpdates' => 1]);
-                                $payload['Timestamp'] = $state['buffer'][$folderName][$laneID][$bufferKey]['Timestamp'];
-                            }
-                            // ----------------------------------------------------------------
-
-                            // 1. In den segmentierten Puffer schreiben (Pfad inkl. LaneID)
-                            $state['buffer'][$folderName][$laneID][$bufferKey] = $payload;
-                            // Fixed first-event deadline; a continuous stream cannot postpone it.
-                            if ($wasEmpty || $immediate) {
-                                $delay = $immediate ? 0 : max(0, min(5000, $this->ReadPropertyInteger('BatchIntervalMs')));
-                                $state['due'][$folderName][$laneID] = microtime(true) + $delay / 1000;
-                            }
-
-                            // 2. Update event counter (Lane-spezifisch für präzise Metriken)
-                            $state['events'][$folderName][$laneID] = ($state['events'][$folderName][$laneID] ?? 0) + 1;
-
-                            // 3. Update processing lag start time (Lane-spezifisch)
-                            if (!isset($state['starts'][$folderName][$laneID]) || $state['starts'][$folderName][$laneID] == 0) {
-                                $state['starts'][$folderName][$laneID] = microtime(true);
-                            }
-
-                            // Status zurückschreiben (NOCH INNERHALB DES LOCKS)
-                            $this->WriteAttributeString('_SyncState', json_encode($state));
-                            // Arm under the state lock so an idle dispatcher cannot lose this wakeup.
-                            if ($wasEmpty) $this->SetTimerInterval('BatchDispatch', 250);
-                        } finally {
-                            IPS_SemaphoreLeave($stateLock);
-                        }
-                    }
-
-                    if ($immediate || $this->ReadPropertyInteger('BatchIntervalMs') <= 0) {
-                        $this->DispatchPendingBatches();
-                    }
-                }
-            }
-        }
-    }
-
-
 
     private function IsChildOf(int $objectID, int $parentID): bool
     {
@@ -826,43 +523,7 @@ class RemoteSync extends IPSModule
         return false;
     }
 
-    public function ExportConfig(): string
-    {
-        $config = [
-            'Properties' => [
-                'Targets'               => $this->ReadPropertyString('Targets'),
-                'Roots'                 => $this->ReadPropertyString('Roots'),
-                'LocalPasswordModuleID' => $this->ReadPropertyInteger('LocalPasswordModuleID'),
-                'LocalServerKey'        => $this->ReadPropertyString('LocalServerKey'),
-                'DebugMode'             => $this->ReadPropertyBoolean('DebugMode'),
-                'AutoCreate'            => $this->ReadPropertyBoolean('AutoCreate'),
-                'ReplicateProfiles'     => $this->ReadPropertyBoolean('ReplicateProfiles'),
-                'BatchIntervalMs'       => $this->ReadPropertyInteger('BatchIntervalMs'),
-                'OnlyChangedValues'     => $this->ReadPropertyBoolean('OnlyChangedValues'),
-                'LaneCount'             => $this->ReadPropertyInteger('LaneCount'),
-                'PerformanceInterval'   => $this->ReadPropertyInteger('PerformanceInterval'),
-                'MaxBufferSize'         => $this->ReadPropertyInteger('MaxBufferSize')
-            ],
-            'Attributes' => [
-                'SyncListCache' => $this->ReadAttributeString('SyncListCache')
-            ]
-        ];
-        return json_encode($config, JSON_PRETTY_PRINT);
-    }
 
-    /**
-     * @param string $JSONString
-     * @return array Array mit ['status' => bool, 'messages' => array]
-     */
-    public function ImportConfig(string $JSONString): array
-    {
-        $data = json_decode($JSONString, true);
-        if (!$data) return ['status' => false, 'messages' => ['Invalid JSON']];
-        foreach (($data['Properties'] ?? []) as $key => $v) IPS_SetProperty($this->InstanceID, $key, $v);
-        $this->WriteAttributeString('SyncListCache', $data['Attributes']['SyncListCache'] ?? '[]');
-        IPS_ApplyChanges($this->InstanceID);
-        return ['status' => true, 'messages' => []];
-    }
 
     // --- UI Hilfsfunktionen für die Buttons ---
 
@@ -909,12 +570,6 @@ class RemoteSync extends IPSModule
         }
         echo "Successfully installed performance variables for $count servers.";
     }
-    public function GetSyncState(): string
-    {
-        // Best Practice: Wir geben den Inhalt des geschützten Attributs 
-        // für externe Analyse-Tools frei.
-        return $this->ReadAttributeString('_SyncState');
-    }
 
 
     public function DeletePerformanceVariables()
@@ -943,14 +598,9 @@ class RemoteSync extends IPSModule
 
     public function Log(string $Message, int $Type = KL_MESSAGE)
     {
-        // DebugMode aus dem Cache/Property lesen
-        if ($this->ReadPropertyBoolean('DebugMode') || $Type == KL_ERROR || $Type == KL_WARNING) {
-            // Wir filtern [BUFFER-CHECK] nur, wenn Debug aus ist
-            if (strpos($Message, '[BUFFER-CHECK]') !== false && !$this->ReadPropertyBoolean('DebugMode')) {
-                return;
-            }
-            // Wir rufen die originale System-Funktion auf
-            parent::LogMessage($Message, $Type);
+        if ($this->ReadPropertyBoolean('DebugMode') || $Type === KL_ERROR || $Type === KL_WARNING) {
+            $this->LogMessage($Message, KL_MESSAGE);
+            $this->appendDebug($Message, $Type);
         }
     }
 
@@ -964,7 +614,7 @@ class RemoteSync extends IPSModule
         if (IPS_SemaphoreEnter($stateLock, 1000)) {
             try {
                 $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
-                $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: [];
+                $delivery = json_decode($this->GetDeliveryStatus(), true, 64, JSON_THROW_ON_ERROR);
                 $this->WriteAttributeString('_PerfBuffer', '{}');
             } finally {
                 IPS_SemaphoreLeave($stateLock);
@@ -1014,10 +664,8 @@ class RemoteSync extends IPSModule
             $qVarID = @IPS_GetObjectIDByIdent("Q" . $short, $this->InstanceID);
             if ($qVarID > 0) {
                 $totalQueue = 0;
-                if (isset($state['buffer'][$folderName])) {
-                    foreach ($state['buffer'][$folderName] as $laneData) {
-                        $totalQueue += count($laneData);
-                    }
+                foreach ($delivery['lanes'] as $lane) {
+                    if ($lane['folder'] === $folderName) $totalQueue += $lane['normalPending'] + $lane['historyPending'];
                 }
                 SetValue($qVarID, $totalQueue);
             }
@@ -1025,87 +673,7 @@ class RemoteSync extends IPSModule
     }
 
 
-    private function ScheduleFailedBatch(string $folder,int $lane): void
-    {
-        $lock='RS_StateLock_'.$this->InstanceID;if(!IPS_SemaphoreEnter($lock,2000))return;
-        try{$state=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
-            $attempt=min(6,(int)($state['retry'][$folder][$lane]['attempts']??0)+1);
-            unset($state['scheduled'][$folder][$lane]);
-            $state['retry'][$folder][$lane]=['after'=>time()+min(60,5*(2**($attempt-1))),'attempts'=>$attempt];
-            $this->WriteAttributeString('_SyncState',json_encode($state));$this->SetTimerInterval('FailedBatchRetry',5000);
-        }finally{IPS_SemaphoreLeave($lock);}
-    }
-    private function ClearFailedBatch(string $folder,int $lane): void
-    {
-        $lock='RS_StateLock_'.$this->InstanceID;if(!IPS_SemaphoreEnter($lock,1000))return;
-        try{$state=json_decode($this->ReadAttributeString('_SyncState'),true) ?: [];
-            if (!isset($state['retry'][$folder][$lane])) return;
-            unset($state['retry'][$folder][$lane]);if(empty($state['retry'][$folder]))unset($state['retry'][$folder]);
-            $this->WriteAttributeString('_SyncState',json_encode($state));if(empty($state['retry']))$this->SetTimerInterval('FailedBatchRetry',0);
-        }finally{IPS_SemaphoreLeave($lock);}
-    }
-    public function RetryFailedBatches(): void
-    {
-        $this->DispatchPendingBatches();
-    }
-
     /** Reserve a worker before dispatch; wait only while queued work exists. */
-    public function DispatchPendingBatches(): void
-    {
-        if (IPS_GetKernelRunlevel() !== KR_READY) return;
-        $lock = 'RS_StateLock_' . $this->InstanceID;
-        if (!IPS_SemaphoreEnter($lock, 1000)) return;
-        $jobs = [];
-        try {
-            $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: [];
-            $original = $state;
-            $now = microtime(true);
-            $wake = null;
-            foreach ($state['buffer'] ?? [] as $folder => $lanes) {
-                foreach ($lanes as $lane => $values) {
-                    $laneLock = 'RS_Lock_' . $this->InstanceID . '_' . md5((string)$folder) . '_' . $lane;
-                    if (empty($values)) {
-                        // Do not reset a failed lane's attempt count while its retry is in flight.
-                        if (IPS_SemaphoreEnter($laneLock, 0)) {
-                            unset($state['due'][$folder][$lane], $state['scheduled'][$folder][$lane], $state['retry'][$folder][$lane]);
-                            IPS_SemaphoreLeave($laneLock);
-                        }
-                        continue;
-                    }
-                    $retryAfter = (int)($state['retry'][$folder][$lane]['after'] ?? 0);
-                    if ($retryAfter > time()) continue; // The slower retry timer owns cooldown.
-                    $deadline = max((float)($state['due'][$folder][$lane] ?? 0), (float)($state['scheduled'][$folder][$lane] ?? 0));
-                    if ($deadline > $now) {
-                        $wake = min($wake ?? PHP_FLOAT_MAX, $deadline - $now);
-                        continue;
-                    }
-                    // Nonblocking: workers acquire lane then state; never wait in reverse order.
-                    if (!IPS_SemaphoreEnter($laneLock, 0)) {
-                        $wake = min($wake ?? PHP_FLOAT_MAX, 1.0);
-                        continue;
-                    }
-                    IPS_SemaphoreLeave($laneLock);
-                    $state['scheduled'][$folder][$lane] = $now + 30;
-                    $jobs[] = [(string)$folder, (int)$lane];
-                    $wake = min($wake ?? PHP_FLOAT_MAX, 30.0);
-                }
-            }
-            foreach (['due', 'scheduled', 'retry'] as $field) {
-                foreach ($state[$field] ?? [] as $folder => $lanes) {
-                    if (empty($lanes)) unset($state[$field][$folder]);
-                }
-            }
-            if ($state !== $original) $this->WriteAttributeString('_SyncState', json_encode($state));
-            $this->SetTimerInterval('BatchDispatch', $wake === null ? 0 : max(250, min(30000, (int)ceil($wake * 1000))));
-            $this->SetTimerInterval('FailedBatchRetry', empty($state['retry']) ? 0 : 5000);
-        } finally {
-            IPS_SemaphoreLeave($lock);
-        }
-        foreach ($jobs as [$folder, $lane]) {
-            $script = 'RS_FlushBuffer(' . $this->InstanceID . ', ' . var_export($folder, true) . ', ' . $lane . ');';
-            if (!IPS_RunScriptText($script)) $this->ScheduleFailedBatch($folder, $lane);
-        }
-    }
 
     private function CountTraffic(array $increments): void
     {
@@ -1140,528 +708,6 @@ class RemoteSync extends IPSModule
             IPS_SemaphoreLeave($lock);
         }
     }
-
-    public function FlushBuffer(string $FolderName = "", int $LaneID = 1)
-    {
-        if ($FolderName === "" || IPS_GetKernelRunlevel() !== KR_READY) {
-            return;
-        }
-
-        $folderHash = md5($FolderName);
-        // ÄNDERUNG v1.9.0: Semaphore ist nun Lane-spezifisch
-        $lockName = "RS_Lock_" . $this->InstanceID . "_" . $folderHash . "_" . $LaneID;
-        $short = substr($folderHash, 0, 20);
-
-        if (!IPS_SemaphoreEnter($lockName, 0)) {
-            return;
-        }
-
-        $failed=false;$variables=[];
-        try {
-            // --- NEU v1.6.4: State-Lock für atomares Auslesen und Leeren des Puffers ---
-            $stateLock = "RS_StateLock_" . $this->InstanceID;
-            $variables = [];
-            $totalInBucketBefore = 0;
-            $skipped = 0;
-            $firstEventTime = microtime(true);
-
-            // --- NEU v1.8.2: Chunking-Parameter ---
-            $maxItemsPerBatch = 400;
-
-            if (IPS_SemaphoreEnter($stateLock, 1000)) {
-                try {
-                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
-
-                    unset($state['scheduled'][$FolderName][$LaneID]);
-                    if (($state['retry'][$FolderName][$LaneID]['after'] ?? 0) > time()
-                        || ($state['due'][$FolderName][$LaneID] ?? 0) > microtime(true)) {
-                        $this->WriteAttributeString('_SyncState', json_encode($state));
-                        return;
-                    }
-
-                    // ÄNDERUNG v1.9.0: Zugriff auf das Lane-spezifische Segment
-                    if (!isset($state['buffer'][$FolderName][$LaneID]) || count($state['buffer'][$FolderName][$LaneID]) === 0) {
-                        return;
-                    }
-
-                    // --- CHIRURGISCHE ÄNDERUNG v1.8.2/1.9.0: Nur Teilmenge der Lane entnehmen ---
-                    $allVariables = $state['buffer'][$FolderName][$LaneID];
-                    $totalInBucketBefore = count($allVariables);
-
-                    $variables = array_slice($allVariables, 0, $maxItemsPerBatch, true);
-                    $totalItems = count($variables);
-
-                    // Wir löschen NUR die entnommenen Items aus dem Puffer-Segment der Lane
-                    foreach ($variables as $key => $val) {
-                        unset($state['buffer'][$FolderName][$LaneID][$key]);
-                    }
-                    // -------------------------------------------------------------
-
-                    // Metriken Snapshots (Lane-spezifisch)
-                    $eventCount = $state['events'][$FolderName][$LaneID] ?? $totalItems;
-                    $skipped = max(0, $eventCount - $totalItems);
-                    $state['events'][$FolderName][$LaneID] = 0;
-
-                    // v1.8.8: Wir sichern den globalen Startzeitpunkt der Warteschlange dieser Lane
-                    $firstEventTime = $state['starts'][$FolderName][$LaneID] ?? microtime(true);
-
-                    // --- KORREKTUR v1.8.5: Ehrliche Lag-Messung pro Lane ---
-                    if (count($state['buffer'][$FolderName][$LaneID]) === 0) {
-                        $state['starts'][$FolderName][$LaneID] = 0;
-                        unset($state['due'][$FolderName][$LaneID]);
-                    }
-                    // -----------------------------------------------
-
-                    // Sofort zurückschreiben
-                    $this->WriteAttributeString('_SyncState', json_encode($state));
-                } finally {
-                    IPS_SemaphoreLeave($stateLock);
-                }
-            } else {
-                throw new Exception("State-Lock timeout in FlushBuffer");
-            }
-
-            // --- AB HIER: Verarbeitung der extrahierten $variables ---
-
-            $this->Log("[BUFFER-CHECK] FlushBuffer: STARTING TRANSMISSION. Items in this server-batch (Lane $LaneID) for $FolderName: $totalItems", KL_MESSAGE);
-
-            // Config-Abruf
-            $firstVar = reset($variables);
-            $target = $this->GetTargetConfig($FolderName);
-
-            if (!$target || !$this->InitConnectionForFolder($target)) {
-                // MODIFIZIERT v1.12.0: Throw Exception statt Return um Recovery auszulösen
-                throw new Exception("Connection to " . $FolderName . " failed.");
-            }
-
-            $batch = array_values($variables);
-            $profiles = [];
-            if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
-                foreach ($batch as $item) {
-                    if (!empty($item['Profile']) && !isset($profiles[$item['Profile']])) {
-                        if (IPS_VariableProfileExists($item['Profile'])) {
-                            $profiles[$item['Profile']] = IPS_GetVariableProfile($item['Profile']);
-                        }
-                    }
-                }
-            }
-
-            $packet = [
-                'Batch'      => $batch,
-                'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate'),
-                'Profiles'   => $profiles
-            ];
-
-            $jsonPacket = json_encode($packet);
-            if ($jsonPacket === false) {
-                throw new Exception("JSON Encoding failed: " . json_last_error_msg());
-            }
-
-            $sizeKB = round(strlen($jsonPacket) / 1024, 2);
-
-            // --- NEU v1.9.8: Persistenter ID-Cache (Attribute) ---
-            $idCache = json_decode($this->ReadAttributeString('_RemoteIDCache'), true) ?: [];
-            $receiverID = $idCache[$FolderName . '_RX'] ?? 0;
-
-            if ($receiverID === 0) {
-                $receiverID = $this->GetRemoteScriptID((int)$target['RemoteScriptRootID'], "RS_Receiver");
-                if ($receiverID > 0) {
-                    $idCache[$FolderName . '_RX'] = $receiverID;
-                    $this->WriteAttributeString('_RemoteIDCache', json_encode($idCache));
-                }
-            }
-            // -----------------------------------------------------
-
-            // Falls das Skript fehlt, geben wir einen Hinweis aus
-            if ($receiverID === 0) {
-                throw new RuntimeException("Receiver script unavailable on '" . $FolderName . "'. Run 'Install Remote' in Step 1.");
-            }
-
-            if ($receiverID > 0 && $this->rpcClient) {
-
-                $startTime = microtime(true);
-                // KORREKTUR v1.9.0: Zurück zu RunScriptWaitEx für RTT/Error Messung
-                $result = $this->rpcClient->IPS_RunScriptWaitEx($receiverID, ['DATA' => $jsonPacket]);
-                $duration = round((microtime(true) - $startTime) * 1000, 2);
-                $lag = round(microtime(true) - $firstEventTime, 2);
-
-                // --- AGGREGATION v1.10.0: Metriken in Puffer schreiben statt direktes SetValue ---
-                if (IPS_SemaphoreEnter($stateLock, 1000)) {
-                    try {
-                        $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
-                        $p = $perf[$FolderName] ?? ['RTT' => 0, 'Batch' => 0, 'Size' => 0, 'Skipped' => 0, 'Lag' => 0, 'Errors' => 0, 'Count' => 0];
-                        $p['RTT'] += $duration;
-                        $p['Batch'] += count($batch);
-                        $p['Size'] += $sizeKB;
-                        $p['Skipped'] += $skipped;
-                        $p['Lag'] += $lag;
-                        $p['Count']++;
-                        $perf[$FolderName] = $p;
-                        $this->WriteAttributeString('_PerfBuffer', json_encode($perf));
-                    } finally {
-                        IPS_SemaphoreLeave($stateLock);
-                    }
-                }
-            }
-            $this->CountTraffic(['SuccessfulBatches' => 1]);
-            $this->ClearFailedBatch($FolderName,$LaneID);
-        } catch (Throwable $e) {
-            $failed=true;
-            $this->Log("[BUFFER-CHECK] FlushBuffer Recovery Lane $LaneID: " . $e->getMessage(), KL_ERROR);
-
-            // --- RECOVERY LOGIK v1.12.0 (Prepend für korrekte Chronologie) ---
-            if (IPS_SemaphoreEnter($stateLock, 2000)) {
-                try {
-                    $state = json_decode($this->ReadAttributeString('_SyncState'), true) ?: ['buffer' => [], 'events' => [], 'starts' => []];
-
-                    // Keep the failed batch first, while retaining newer values received in flight.
-                    $currentLaneBuffer = $state['buffer'][$FolderName][$LaneID] ?? [];
-                    $state['buffer'][$FolderName][$LaneID] = array_replace($variables, $currentLaneBuffer);
-
-                    $this->WriteAttributeString('_SyncState', json_encode($state));
-
-                    $perf = json_decode($this->ReadAttributeString('_PerfBuffer'), true) ?: [];
-                    if (!isset($perf[$FolderName])) $perf[$FolderName] = ['RTT' => 0, 'Batch' => 0, 'Size' => 0, 'Skipped' => 0, 'Lag' => 0, 'Errors' => 0, 'Count' => 0];
-                    $perf[$FolderName]['Errors']++;
-                    $this->WriteAttributeString('_PerfBuffer', json_encode($perf));
-                } finally {
-                    IPS_SemaphoreLeave($stateLock);
-                }
-            }
-        } finally {
-            if($failed)$this->ScheduleFailedBatch($FolderName,$LaneID);
-            IPS_SemaphoreLeave($lockName);
-
-            $this->DispatchPendingBatches();
-        }
-    }
-    // --- CODE GENERATORS ---
-
-
-
-
-    private function GetRemoteScriptID(int $parentID, string $ident): int
-    {
-        // 1. Suche über Ident
-        try {
-            $id = $this->rpcClient->IPS_GetObjectIDByIdent($ident, $parentID);
-            if ($id > 0) {
-                $obj = $this->rpcClient->IPS_GetObject($id);
-                // KORREKTUR v1.9.6: Check auf Array-Validität (Offset-Fix)
-                if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3) {
-                    return $id;
-                }
-            }
-        } catch (Exception $e) {
-        }
-
-        // 2. Fallback: Suche über Namen (ohne das Skript zu heilen oder zu verändern)
-        try {
-            $possibleNames = ($ident === 'RS_Gateway')
-                ? ['RemoteSync_Gateway', 'RemoteSync Gateway']
-                : ['RemoteSync_Receiver', 'RemoteSync Receiver'];
-
-            $children = $this->rpcClient->IPS_GetChildrenIDs($parentID);
-            if (is_array($children)) {
-                foreach ($children as $cID) {
-                    $obj = $this->rpcClient->IPS_GetObject($cID);
-                    // KORREKTUR v1.9.6: Check auf Array-Validität (Offset-Fix)
-                    if (is_array($obj) && isset($obj['ObjectType']) && $obj['ObjectType'] == 3 && in_array($obj['ObjectName'], $possibleNames)) {
-                        return $cID;
-                    }
-                }
-            }
-        } catch (Exception $e) {
-        }
-
-        return 0; // Nichts gefunden
-    }
-
-
-    private function GenerateReceiverCode($gatewayID)
-    {
-        $gwID = (int)$gatewayID;
-
-        return "<?php
-/* RemoteSync Receiver */
-
-\$data   = \$_IPS['DATA'] ?? '';
-\$packet = json_decode(\$data, true);
-
-if (!is_array(\$packet)) return;
-
-\$batch      = \$packet['Batch'] ?? [];
-// -- ÄNDERUNG: rootID wird nicht mehr global aus dem Packet-Header gelesen --
-\$autoCreate = !empty(\$packet['AutoCreate']); 
-\$gatewayID  = $gwID;
-\$profiles   = \$packet['Profiles'] ?? [];
-
-// -- ÄNDERUNG: Validierung ohne rootID Prüfung --
-if (!is_array(\$batch)) return;
-
-// --- Profile Creation (unverändert) ---
-if (is_array(\$profiles)) {
-    foreach (\$profiles as \$pName => \$pDef) {
-        if (!is_string(\$pName) || \$pName === '' || IPS_VariableProfileExists(\$pName)) continue;
-        @IPS_CreateVariableProfile(\$pName, \$pDef['ProfileType'] ?? 0);
-        if (isset(\$pDef['Icon'])) @IPS_SetVariableProfileIcon(\$pName, \$pDef['Icon']);
-        @IPS_SetVariableProfileText(\$pName, \$pDef['Prefix'] ?? '', \$pDef['Suffix'] ?? '');
-        @IPS_SetVariableProfileValues(\$pName, \$pDef['MinValue'] ?? 0, \$pDef['MaxValue'] ?? 0, \$pDef['StepSize'] ?? 0);
-        if (isset(\$pDef['Digits'])) @IPS_SetVariableProfileDigits(\$pName, \$pDef['Digits']);
-        if (!empty(\$pDef['Associations'])) {
-            foreach (\$pDef['Associations'] as \$assoc) {
-                @IPS_SetVariableProfileAssociation(\$pName, \$assoc['Value'], \$assoc['Name'] ?? '', \$assoc['Icon'] ?? '', \$assoc['Color'] ?? 0);
-            }
-        }
-    }
-}
-
-foreach (\$batch as \$item) {
-    // -- ÄNDERUNG: rootID wird nun für jedes Item individuell gesetzt --
-    \$rootID    = \$item['RemoteRootID'] ?? 0;
-    if (\$rootID <= 0) continue;
-    
-    \$localID   = \$item['LocalID'];
-    
-    try {
-        \$serverKey = \$item['Key'];
-        \$safeIdent = 'Rem_' . \$localID;
-        \$refString = 'RS_REF:' . \$serverKey . ':' . \$localID;
-        \$path      = \$item['Path'] ?? [];
-
-        // 1. PFAD AUFLÖSEN
-        \$currentParent = \$rootID;
-        foreach (\$path as \$index => \$nodeName) {
-            if (\$index === count(\$path) - 1) break;
-            \$childID = @IPS_GetObjectIDByName(\$nodeName, \$currentParent);
-            if (!\$childID && \$autoCreate) {
-                \$childID = IPS_CreateInstance('{485D0419-BE97-4548-AA9C-C083EB82E61E}');
-                IPS_SetParent(\$childID, \$currentParent);
-                IPS_SetName(\$childID, \$nodeName);
-            }
-            if (\$childID) \$currentParent = \$childID;
-        }
-
-        // 2. VARIABLE SUCHEN
-        \$remoteID = @IPS_GetObjectIDByIdent(\$safeIdent, \$currentParent);
-        if (!\$remoteID) {
-            foreach (IPS_GetChildrenIDs(\$currentParent) as \$cID) {
-                if (IPS_GetObject(\$cID)['ObjectInfo'] === \$refString) {
-                    \$remoteID = \$cID;
-                    @IPS_SetIdent(\$remoteID, \$safeIdent);
-                    break;
-                }
-            }
-        }
-        
-        // 3. LÖSCHEN (unverändert)
-        if (!empty(\$item['Delete'])) {
-            if (\$remoteID > 0) {
-                \$parentToCleanup = IPS_GetParent(\$remoteID);
-                \$deleteRecursive = function(\$id) use (&\$deleteRecursive) {
-                    foreach (IPS_GetChildrenIDs(\$id) as \$childID) \$deleteRecursive(\$childID);
-                    \$obj = IPS_GetObject(\$id);
-                    switch (\$obj['ObjectType']) {
-                        case 0: @IPS_DeleteCategory(\$id); break;
-                        case 1: @IPS_DeleteInstance(\$id); break;
-                        case 2: @IPS_DeleteVariable(\$id); break;
-                        case 3: @IPS_DeleteScript(\$id, true); break;
-                    }
-                };
-                \$deleteRecursive(\$remoteID);
-                while (\$parentToCleanup > 0 && \$parentToCleanup != \$rootID) {
-                    if (!IPS_ObjectExists(\$parentToCleanup)) break;
-                    \$children = IPS_GetChildrenIDs(\$parentToCleanup);
-                    if (count(\$children) > 0) break;
-                    \$obj = IPS_GetObject(\$parentToCleanup);
-                    \$nextParent = IPS_GetParent(\$parentToCleanup);
-                    if (\$obj['ObjectType'] == 0) {
-                        @IPS_DeleteCategory(\$parentToCleanup);
-                    } elseif (\$obj['ObjectType'] == 1) {
-                        \$inst = IPS_GetInstance(\$parentToCleanup);
-                        if (isset(\$inst['ModuleInfo']['ModuleID']) && strcasecmp(\$inst['ModuleInfo']['ModuleID'], '{485D0419-BE97-4548-AA9C-C083EB82E61E}') === 0) {
-                            @IPS_DeleteInstance(\$parentToCleanup);
-                        } else { break; }
-                    } else { break; }
-                    \$parentToCleanup = \$nextParent;
-                }
-            }
-            continue;
-        }
-
-        // 4. ERSTELLEN
-        if (!\$remoteID) {
-            if (!\$autoCreate) continue;
-            \$remoteID = IPS_CreateVariable(\$item['Type']);
-            IPS_SetParent(\$remoteID, \$currentParent);
-            IPS_SetName(\$remoteID, end(\$path));
-            IPS_SetIdent(\$remoteID, \$safeIdent);
-        }
-
-        // 5. UPDATE
-        if (\$remoteID) {
-            IPS_SetInfo(\$remoteID, \$refString);
-            SetValue(\$remoteID, \$item['Value']);
-            if (!empty(\$item['Profile']) && IPS_VariableProfileExists(\$item['Profile'])) {
-                IPS_SetVariableCustomProfile(\$remoteID, \$item['Profile']);
-            }
-            IPS_SetVariableCustomAction(\$remoteID, !empty(\$item['Action']) ? \$gatewayID : 0);
-        }
-    } catch (Exception \$e) {
-        IPS_LogMessage('RemoteSync_RX', 'Error Item ' . \$item['LocalID'] . ': ' . \$e->getMessage());
-    }
-}
-?>";
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    private function GenerateGatewayCode(int $remSecID)
-    {
-        return "<?php
-/* RemoteSync Gateway */
-
-if (!isset(\$_IPS['VARIABLE']) || !array_key_exists('VALUE', \$_IPS)) {
-    return;
-}
-
-\$remoteVarID = \$_IPS['VARIABLE'];
-\$info        = IPS_GetObject(\$remoteVarID)['ObjectInfo'];
-
-// Expected format: RS_REF:ServerKey:LocalID
-\$parts = explode(':', \$info);
-if (count(\$parts) < 3 || \$parts[0] !== 'RS_REF') {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid ObjectInfo: ' . \$info);
-    return;
-}
-
-\$targetKey = \$parts[1];
-\$targetID  = (int)\$parts[2];
-
-\$secID = $remSecID;
-
-if (!function_exists('SEC_GetSecret')) {
-    IPS_LogMessage('RemoteSync_Gateway', 'SEC Module missing');
-    return;
-}
-
-\$json  = SEC_GetSecret(\$secID, \$targetKey);
-\$creds = json_decode(\$json, true);
-
-\$url  = \$creds['URL'] ?? \$creds['url'] ?? \$creds['Url'] ?? null;
-\$user = \$creds['User'] ?? \$creds['user'] ?? \$creds['Username'] ?? null;
-\$pw   = \$creds['PW'] ?? \$creds['pw'] ?? \$creds['Password'] ?? null;
-
-if (!\$url || !\$user || !\$pw) {
-    IPS_LogMessage('RemoteSync_Gateway', 'Invalid config for key ' . \$targetKey);
-    return;
-}
-
-// Normalize target URL: allow host:port, https://host:port, host:port/api, etc.
-\$url = trim(\$url);
-if (!preg_match('~^https?://~i', \$url)) {
-    \$url = 'https://' . \$url;
-}
-\$url = rtrim(\$url, '/');
-if (!preg_match('~/api$~i', \$url)) {
-    \$url .= '/api';
-}
-\$connUrl = \$url . '/';
-
-class RemoteSync_MiniRPC
-{
-    private string \$url;
-    private string \$user;
-    private string \$pw;
-
-    public function __construct(string \$url, string \$user, string \$pw)
-    {
-        \$this->url  = \$url;
-        \$this->user = \$user;
-        \$this->pw   = \$pw;
-    }
-
-    public function __call(string \$method, array \$params)
-    {
-        \$payload = json_encode([
-            'jsonrpc' => '2.0',
-            'method'  => \$method,
-            'params'  => \$params,
-            'id'      => time()
-        ]);
-
-        \$headers =
-            \"Content-Type: application/json\\r\\n\" .
-            \"Authorization: Basic \" . base64_encode(\$this->user . ':' . \$this->pw) . \"\\r\\n\";
-
-        \$opts = [
-            'http' => [
-                'method'        => 'POST',
-                'header'        => \$headers,
-                'content'       => \$payload,
-                'timeout'       => 5,
-                'ignore_errors' => true
-            ],
-            'ssl'  => [
-                'verify_peer'      => false,
-                'verify_peer_name' => false
-            ]
-        ];
-
-        \$ctx    = stream_context_create(\$opts);
-        \$result = @file_get_contents(\$this->url, false, \$ctx);
-
-        if (\$result === false) {
-            \$err = error_get_last();
-            throw new Exception('Connect Fail ' . \$this->url . ' - ' . (\$err['message'] ?? 'unknown'));
-        }
-
-        \$response = json_decode(\$result, true);
-        if (isset(\$response['error'])) {
-            throw new Exception(\$response['error']['message'], \$response['error']['code'] ?? 0);
-        }
-
-        return \$response['result'] ?? null;
-    }
-}
-
-\$rpc = new RemoteSync_MiniRPC(\$connUrl, \$user, \$pw);
-
-try {
-    \$rpc->RequestAction(\$targetID, \$_IPS['VALUE']);
-} catch (Exception \$e) {
-    // -32603 typically means 'no action handler'
-    if (\$e->getCode() == -32603) {
-        try {
-            \$rpc->SetValue(\$targetID, \$_IPS['VALUE']);
-        } catch (Exception \$e2) {
-            IPS_LogMessage('RemoteSync_Gateway', 'SetValue failed: ' . \$e2->getMessage());
-        }
-    } else {
-        IPS_LogMessage('RemoteSync_Gateway', 'Error: ' . \$e->getMessage());
-    }
-}
-
-// Mirror value locally as well
-SetValue(\$remoteVarID, \$_IPS['VALUE']);
-?>";
-    }
-
-
-
 
     private function GetRecursiveVariables($parentID, &$result)
     {
@@ -1711,7 +757,10 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
                 'Roots'                  => json_decode($this->ReadPropertyString("Roots"), true) ?? [],
                 'SyncList'               => json_decode($this->ReadAttributeString("SyncListCache"), true) ?? []
             ];
-
+            $this->config['Index'] = [];
+            foreach ($this->config['SyncList'] as $row) {
+                $this->config['Index'][(int)$row['ObjectID']][] = $row;
+            }
             return true;
         } catch (Exception $e) {
             $this->Log("LoadConfig Error: " . $e->getMessage(), KL_ERROR);
@@ -1726,62 +775,13 @@ SetValue(\$remoteVarID, \$_IPS['VALUE']);
 
 class RemoteSync_RPCClient
 {
-    private $url;
-    private $onRequest;
+    public function __construct(private array $connection, private int $timeout, private $onRequest) {}
 
-
-    public function __construct($url, ?callable $onRequest = null)
-    {
-        $this->url = $url;
-        $this->onRequest = $onRequest;
-    }
+    public function endpoint(): string { return $this->connection['url']; }
 
     public function __call($method, $params)
     {
-        $payload = json_encode([
-            'jsonrpc' => '2.0',
-            'method'  => $method,
-            'params'  => $params,
-            'id'      => time()
-        ]);
-
-        $ch = curl_init($this->url);
-
-        curl_setopt_array($ch, [
-            CURLOPT_POST           => true,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_BINARYTRANSFER => true,
-            CURLOPT_POSTFIELDS     => $payload,
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
-                'Content-Length: ' . strlen($payload)
-            ],
-            CURLOPT_TIMEOUT        => 60,
-            // KORREKTUR v1.9.9: Mehr Zeit für den Verbindungsaufbau bei hoher Last
-            CURLOPT_CONNECTTIMEOUT => 30,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => 0,
-            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4
-        ]);
-
-        if ($this->onRequest !== null) ($this->onRequest)(strlen($payload));
-        $result = curl_exec($ch);
-        $error  = curl_error($ch);
-        $errno  = curl_errno($ch);
-
-        curl_close($ch);
-
-        if ($result === false) {
-            throw new Exception("cURL Error ($errno): $error");
-        }
-
-        $response = json_decode($result, true);
-
-        if (isset($response['error'])) {
-            throw new Exception($response['error']['message']);
-        }
-
-        return $response['result'] ?? null;
+        return RemoteSyncConnectionV2::call($this->connection, $method, $params, $this->timeout, $this->onRequest);
     }
 }
 

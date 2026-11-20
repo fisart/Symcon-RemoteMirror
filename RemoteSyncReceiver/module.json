@@ -1,0 +1,13 @@
+{
+    "id": "{D07F247A-9FC0-49BF-961D-D2D54D0B9648}",
+    "name": "RemoteSyncReceiver",
+    "type": 3,
+    "vendor": "Remote Utilities",
+    "aliases": [
+        "RemoteSync Receiver"
+    ],
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "RSR"
+}

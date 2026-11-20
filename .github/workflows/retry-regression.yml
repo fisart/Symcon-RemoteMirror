@@ -1,9 +1,9 @@
 name: RemoteSync delivery and traffic
 on:
   push:
-    branches: [fix/secrets-read-retry-storm]
+    branches: [fix/secrets-read-retry-storm, feat/remotesync-1.14.0]
   pull_request:
-    paths: ['RemoteSync/**', 'tests/**', '.github/workflows/retry-regression.yml']
+    paths: ['RemoteSync/**', 'RemoteSyncReceiver/**', 'libs/**', 'tests/**', 'library.json', '.github/workflows/retry-regression.yml']
 permissions:
   contents: read
 jobs:
@@ -23,3 +23,5 @@ jobs:
       - run: php -l RemoteSync/module.php
       - run: php -n tests/retry-regression.php
       - run: php -n tests/traffic-regression.php
+      - run: php -n tests/migration-regression.php
+      - run: php -n tests/journal-regression.php

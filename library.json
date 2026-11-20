@@ -3,7 +3,8 @@
     "author": "Artur Fischer",
     "name": "RemoteSync",
     "url": "",
-    "version": "1.13.0",
+    "version": "1.14.0",
+    "compatibility": { "version": "7.0" },
     "build": 0,
     "date": 0
 }

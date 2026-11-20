@@ -1,0 +1,9 @@
+{
+    "elements": [
+        {
+            "type": "Label",
+            "caption": "This receiver is configured automatically by its RemoteSync sender. Reverse actions require a working action handler on the source variable."
+        }
+    ],
+    "actions": []
+}

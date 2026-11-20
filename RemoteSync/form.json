@@ -4,13 +4,18 @@
             "type": "ExpansionPanel",
             "caption": "Global Configuration",
             "items": [
+                { "type": "CheckBox", "name": "SyncEnabled", "caption": "Enable synchronization" },
+                { "type": "CheckBox", "name": "WebEnabled", "caption": "Enable passkey-protected administration page" },
+                { "type": "NumberSpinner", "name": "RequestTimeout", "caption": "HTTPS request timeout (seconds)", "minimum": 30, "maximum": 600 },
+                { "type": "SelectInstance", "name": "PortalInstanceID", "caption": "Portal instance (optional)" },
+                { "type": "SelectInstance", "name": "DocumentationInstanceID", "caption": "Documentation instance (optional)" },
                 { "type": "CheckBox", "name": "DebugMode", "caption": "Debug Mode (Verbose Log)" },
                 { "type": "CheckBox", "name": "AutoCreate", "caption": "Use Auto-Create (Create missing remote objects)" },
                 { "type": "CheckBox", "name": "ReplicateProfiles", "caption": "Replicate Variable Profiles (local → remote)" },
                 { "type": "NumberSpinner", "name": "LaneCount", "caption": "Parallel Lanes per Server", "minimum": 1, "maximum": 10 },
                 { "type": "NumberSpinner", "name": "BatchIntervalMs", "caption": "Batch window (milliseconds, 0 = immediate)", "minimum": 0, "maximum": 5000 },
                 { "type": "CheckBox", "name": "OnlyChangedValues", "caption": "Skip unchanged ordinary values" },
-                { "type": "Label", "caption": "Immediate: send urgent signals without the batch window and retain every update. Full Hist.: retain every update within batches. Ordinary values keep the latest pending value." },
+                { "type": "Label", "caption": "Immediate sends without the batching delay. Select Full History to retain every accepted value, including repeated values, until acknowledged. Combine both for urgent history. Ordinary values can coalesce or be dropped on failure." },
                 { "type": "NumberSpinner", "name": "MaxBufferSize", "caption": "Max Items per Lane (Safety Limit)", "minimum": 100, "maximum": 50000 },
                 { "type": "NumberSpinner", "name": "PerformanceInterval", "caption": "Metrics Update Interval (seconds)", "minimum": 10, "maximum": 3600 },
                 {
@@ -48,7 +53,7 @@
                 },
                 { 
                     "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", "add": "", 
-                    "edit": { "type": "Button", "caption": "Install Remote", "onClick": "RS_InstallRemoteScripts($id, $Name);" } 
+                    "edit": { "type": "Button", "caption": "Verify companion", "onClick": "RS_InstallRemoteScripts($id, $Name);" }
                 }
             ]
         },
@@ -90,6 +95,10 @@
                 }
             ]
         },
+        { "type": "Button", "caption": "Show administration path", "onClick": "echo RS_GetWebURL($id);" },
+        { "type": "Button", "caption": "Add administration to Portal", "onClick": "echo RS_AddToPortal($id);" },
+        { "type": "Button", "caption": "Show delivery status", "onClick": "echo RS_GetDeliveryStatus($id);" },
+        { "type": "Button", "caption": "Clear debug log", "onClick": "RS_ClearDebug($id);" },
         { "type": "Button", "caption": "Force Refresh UI", "onClick": "RS_UpdateUI($id);" },
         {
             "type": "ExpansionPanel",

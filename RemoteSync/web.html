@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RemoteSync administration</title>
+<style nonce="__NONCE__">
+:root{font:16px system-ui,sans-serif;color:#172c36;background:#f3f5f4}*{box-sizing:border-box}body{max-width:76rem;margin:auto;padding:1.2rem}header,section{padding:1.2rem;background:white;margin:.8rem 0;border:1px solid #ccd5d1;border-radius:.5rem}h1,h2{margin:.25rem 0 .8rem}h2{font-size:1.2rem}button,a,input,textarea{font:inherit}button,a{padding:.45rem .7rem}button{cursor:pointer}label{display:inline-flex;align-items:center;gap:.45rem;margin:.4rem}input[type=number]{width:6rem}textarea{display:block;width:100%;min-height:7rem}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:.4rem;border-bottom:1px solid #dce3e0}.scroll{overflow:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow:auto}#feedback{position:sticky;bottom:0;background:#193b32;color:white;padding:.6rem}button:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid #037a73}
+</style></head><body><header><h1>RemoteSync</h1><p id="state"></p><nav id="nav"></nav><button id="refresh">Refresh</button> <button data-action="pause">Pause capture</button> <button data-action="enable">Resume capture</button> <button data-action="sync">Sync current values</button></header>
+<section><h2>Delivery</h2><div class="scroll"><table><thead><tr><th>Target</th><th>Lane</th><th>Ordinary pending</th><th>History pending</th><th>History bytes</th></tr></thead><tbody id="lanes"></tbody></table></div><p id="retry"></p><details><summary>Traffic counters</summary><pre id="traffic"></pre><button data-action="resetCounters">Reset counters</button></details></section>
+<section><h2>Configuration</h2><p>Drain queued delivery, then pause capture before saving or importing settings.</p><div id="properties"></div><details><summary>Targets and root mappings</summary><label for="targets">Targets</label><textarea id="targets"></textarea><label for="roots">Root mappings</label><textarea id="roots"></textarea></details>
+<h3>Variable selections</h3><p>Immediate bypasses the batching delay. Full History retains every accepted value until acknowledged. Select both when every urgent value matters.</p><label>Filter <input id="filter" type="search"></label><div class="scroll"><table><thead><tr><th>Variable</th><th>Target</th><th>Active</th><th>History</th><th>Immediate</th><th>Action</th><th>Delete</th></tr></thead><tbody id="rows"></tbody></table></div>
+<button id="validate">Validate changes</button> <button id="save">Save configuration</button>
+<h3>Configuration file</h3><a href="?action=export" download>Export JSON</a><label>Load file <input id="import" type="file" accept=".json,application/json"></label></section>
+<section><h2>Debug log</h2><pre id="debug"></pre><button data-action="clearDebug">Clear log</button></section><p id="feedback" role="status">Loading</p>
+<script nonce="__NONCE__">
+'use strict';
+const byId = id => document.getElementById(id);
+const flags = ['Active','FullHistory','Immediate','Action','Delete'];
+const key = row => JSON.stringify([row.Folder,row.LocalRootID,row.ObjectID]);
+let status, config, selections, revision;
+const propertyLabels = {DebugMode:'Verbose debug logging',AutoCreate:'Create missing mirrors',ReplicateProfiles:'Replicate profiles',OnlyChangedValues:'Skip unchanged ordinary values',LaneCount:'Lanes',RequestTimeout:'Request timeout (s)',LocalPasswordModuleID:'Secrets instance ID',LocalServerKey:'Local server key',BatchIntervalMs:'Batch window (ms)',MaxBufferSize:'Ordinary queue limit',PerformanceInterval:'Metrics interval (s)',WebEnabled:'Enable web administration',PortalInstanceID:'Portal instance ID',DocumentationInstanceID:'Documentation instance ID'};
+function cell(tr,value){const td=tr.insertCell();td.textContent=value;return td;}
+function renderRows(){
+    const body=byId('rows');body.replaceChildren();const filter=byId('filter').value.toLowerCase();
+    for(const row of selections.values()){
+        const name=(row.Name||'Variable')+' ('+row.ObjectID+')';
+        if(!(name+' '+row.Folder).toLowerCase().includes(filter)) continue;
+        const tr=body.insertRow();cell(tr,name);cell(tr,row.Folder);
+        for(const flag of flags){const box=document.createElement('input');box.type='checkbox';box.checked=!!row[flag];box.setAttribute('aria-label',flag+' '+name);
+            box.onchange=()=>{row[flag]=box.checked;row.edited=true;if(flag==='Delete'&&box.checked){row.Active=false;row.FullHistory=false;renderRows();}};tr.insertCell().append(box);}
+    }
+}
+function renderConfig(rows){
+    const container=byId('properties');container.replaceChildren();
+    for(const [field,title] of Object.entries(propertyLabels)){
+        if(!(field in config.Properties))continue;
+        const label=document.createElement('label'),input=document.createElement('input'),value=config.Properties[field];
+        label.textContent=title;input.type=typeof value==='boolean'?'checkbox':typeof value==='number'?'number':'text';
+        if(input.type==='checkbox')input.checked=value;else input.value=value;
+        input.onchange=()=>config.Properties[field]=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;
+        label.append(input);container.append(label);
+    }
+    for(const [id,field] of [['targets','Targets'],['roots','Roots']])byId(id).value=JSON.stringify(JSON.parse(config.Properties[field]),null,2);
+    selections=new Map(rows.map(row=>[key(row),{...row}]));
+    for(const row of JSON.parse(config.Attributes.SyncListCache))selections.set(key(row),{...selections.get(key(row)),...row,saved:true});
+    renderRows();
+}
+function currentConfig(){
+    for(const [id,field] of [['targets','Targets'],['roots','Roots']])config.Properties[field]=JSON.stringify(JSON.parse(byId(id).value));
+    config.Attributes.SyncListCache=JSON.stringify([...selections.values()].filter(row=>row.saved||row.edited).map(({saved,edited,...row})=>row));
+    return config;
+}
+async function api(action,extra={}){
+    const response=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,csrf:status.csrf,...extra})});
+    const result=await response.json();if(!response.ok||!result.ok)throw Error(result.error||'Request failed');return result.message;
+}
+async function refresh(){
+    const response=await fetch('?action=status');if(!response.ok)throw Error('Cannot load status. Sign in again if the session has expired.');
+    status=await response.json();config=structuredClone(status.config);revision=status.revision;renderConfig(status.selections);
+    byId('state').textContent='Version '+status.version+' · Capture '+(config.Properties.SyncEnabled?'enabled':'paused');
+    byId('lanes').replaceChildren();for(const lane of status.delivery.lanes){const r=byId('lanes').insertRow();for(const k of ['folder','lane','normalPending','historyPending','historyBytes'])cell(r,lane[k]);}
+    byId('retry').textContent=Object.keys(status.delivery.retry).length+' lanes in transport retry';
+    byId('traffic').textContent=JSON.stringify(status.traffic,null,2);byId('debug').textContent=status.debug||'No entries';
+    byId('nav').replaceChildren();for(const [k,title] of [['portal','Portal'],['documentation','Documentation']])if(status[k]){const a=document.createElement('a');a.href=status[k];a.textContent=title;byId('nav').append(a);}
+}
+async function run(task){try{const result=await task();byId('feedback').textContent=typeof result==='object'?JSON.stringify(result):result||'Ready';}catch(e){byId('feedback').textContent=e.message;}}
+for(const button of document.querySelectorAll('[data-action]'))button.onclick=()=>run(async()=>{const msg=await api(button.dataset.action);await refresh();return msg;});
+byId('refresh').onclick=()=>run(refresh);byId('filter').oninput=renderRows;
+byId('validate').onclick=()=>run(()=>api('validate',{config:currentConfig()}));
+byId('save').onclick=()=>run(async()=>{const msg=await api('save',{config:currentConfig(),revision});await refresh();return msg;});
+byId('import').onchange=()=>run(async()=>{const file=byId('import').files[0];if(!file)return;const data=JSON.parse(await file.text());const verdict=await api('validate',{config:data});if(!verdict.valid)throw Error(verdict.issues.join(' '));config=data;renderConfig([]);return 'File validated. Review and save to apply.';});
+run(refresh);
+</script></body></html>

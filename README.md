@@ -1,3 +1,15 @@
+# RemoteSync 1.14.0
+
+RemoteSync mirrors IP-Symcon variables between installations. The same library contains the existing sender and the new RemoteSync Receiver companion. Upgrade the existing library on each participating installation. RemoteSync then creates and configures its receiver from the saved target, root and Secrets references.
+
+**Immediate** removes the batching delay. **Full History** retains every accepted update, including repeated equal values, until the receiver acknowledges it. Select both for urgent signals whose history matters. Ordinary updates keep the latest pending value and may be dropped after a failed send.
+
+[1.14.0 installation, migration, operation and rollback](docs/upgrade-1.14.0.md)
+
+**Deutsch.** Die vorhandene Bibliothek auf jedem beteiligten System aktualisieren. RemoteSync richtet die Empfängerinstanzen anhand der bestehenden Konfiguration ein. **Immediate** sendet ohne Sammelwartezeit. **Full History** speichert jeden angenommenen Wert bis zur Bestätigung. Für dringende Signale mit vollständigem Verlauf beide Optionen wählen. Normale Meldungen können zusammengefasst werden oder bei einem Sendefehler entfallen.
+
+<details><summary>Historical documentation through 1.13.0 / Frühere Dokumentation bis 1.13.0</summary>
+
 # Hochperformante, bidirektionale Synchronisierung von Variablen-Strukturen zwischen entfernten IP-Symcon Systemen
 
 ## 1. Einführung & Problemstellung
@@ -308,3 +320,5 @@ Sensors are updated based on the `PerformanceInterval`:
 
 **Version:** 1.12.0 (High-Performance Safety Update)
 **Status:** Gold Master
+
+</details>
