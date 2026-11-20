@@ -5,7 +5,7 @@ The sender keeps library ID `{58A6A420-5614-4161-9A31-931089943321}`, module ID 
 ## Install the upgrade
 
 1. Back up the existing Symcon installations, settings and scripts. Record one dashboard mirror ID and a representative reverse control on each destination.
-2. Deploy the complete 1.14.0 library to each participating Symcon system using your normal module installation method. A destination which previously hosted only generated scripts also needs the library once. Both modules are in the same release. Apply the existing sender instance if the kernel has not already applied it.
+2. In Symcon Module Control, use the gear next to the existing `fisart/Symcon-RemoteMirror` library to select `feat/remotesync-1.14.0`. Upgrade all participating systems during the same maintenance window. For a destination that previously hosted only generated scripts, add the same repository and select the same branch once. Both modules are in the same library. Keep the existing sender instance. Apply it if the kernel has yet to apply it. [Symcon Module Control](https://www.symcon.de/de/service/dokumentation/modulreferenz/kern-instanzen/module-control/)
 3. The sender reads its existing targets, secret references, roots, variable selections and delivery flags. It creates one companion per sender and target under the saved remote script root. Setup runs automatically at kernel readiness and retries unavailable destinations. **Verify companion** repeats setup on demand. The registered receiver stores the allowed root mappings, source identity and reverse Secrets reference. A selected reverse action also causes a read-only HTTPS call back to the source during setup.
 4. Verify that your recorded mirror ID receives a fresh value, the dashboard still points to it and an action reaches the actual device. Confirm the mirrored value changes when the source reports it. Use **Show delivery status** to check for retained history and the Symcon log for rejected items.
 
@@ -15,7 +15,7 @@ Existing mirrors are matched using their saved source reference within the mappe
 
 A requested deletion applies to an owned mirror without children. A mirror containing other objects is held for review. Empty destination containers remain in place.
 
-Temporary gaps or repeats during mixed-version deployment are possible. On first apply the sender copies remaining routable 1.13.0 buffered values into the durable queue. Values already removed by an old worker cannot be recovered. Startup and manual synchronization can also record a current-value snapshot.
+Temporary gaps or repeats during mixed-version deployment are possible. On first apply the sender copies remaining routable 1.13.0 buffered values into the durable queue. Values already removed by an old worker cannot be recovered. Startup and manual synchronization can also record a current-value snapshot. After cutover, verify Full History by disconnecting a test destination briefly, then comparing its acknowledged records with the accepted updates after the queue drains.
 
 ## Delivery after cutover
 
