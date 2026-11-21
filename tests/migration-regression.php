@@ -69,7 +69,7 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.1','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.2','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');
@@ -84,22 +84,15 @@ require __DIR__ . '/bootstrap.php';
     $peer = $GLOBALS['rpcHandler'];
     $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer) {
         $reply = $peer($method, $params);
-        return $method === 'RSR_Configure' ? '2' : $reply;
+        return $method === 'RSR_Configure' ? null : $reply;
     };
     event($m, 89);
     flushLane($m);
     $receiverID = IPS_GetInstanceListByModuleID(RECEIVER_GUID)[0];
     $receiverDebug = IPS_GetObjectIDByIdent('Debug', $receiverID);
     check(str_contains(GetValue($receiverDebug), 'saved the receiver binding and returned int (2)'), 'Receiver writes its setup outcome to its own Debug log.');
-    check(str_contains(GetValue($senderDebug), 'receiver #' . $receiverID . ' returned string ("2"). Expected int (2).'), 'Sender records the actual reply type and safe protocol value.');
-    check(count(rows($m)) === 1 && !mirrorID(), 'Diagnostic logging preserves the strict protocol check and retains pending history.');
-
-    $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer) {
-        $reply = $peer($method, $params);
-        return $method === 'RSR_Configure' ? null : $reply;
-    };
-    $m->ProvisionTargets();
-    check(str_contains(GetValue($senderDebug), 'returned null. Expected int (2).'), 'Null setup reply is distinguishable from a string.');
+    check(str_contains(GetValue($senderDebug), 'receiver #' . $receiverID . ' returned null.'), 'Sender records a null reply and the receiver ID.');
+    check(count(rows($m)) === 1 && !mirrorID(), 'A null reply retains pending history.');
     $testReply = 'private reply data';
     $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer, $testReply) {
         $reply = $peer($method, $params);
@@ -110,10 +103,35 @@ require __DIR__ . '/bootstrap.php';
     $rx = $GLOBALS['modules'][$receiverID];
     throws(fn() => $rx->Configure('', '{}'), 'Configure still rejects invalid binding data.');
     check(str_contains(GetValue($receiverDebug), 'failed while validating the sender and roots'), 'Receiver records the failing setup stage.');
-    connectPeer();
+
+    foreach ([true, 3, '02', '2.0', '2 '] as $invalidReply) {
+        $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer, $invalidReply) {
+            $reply = $peer($method, $params);
+            return $method === 'RSR_Configure' ? $invalidReply : $reply;
+        };
+        forceDue($m);
+        flushLane($m);
+        check(count(rows($m)) === 1 && !mirrorID(), 'Unsupported protocol replies retain pending history.');
+    }
+
+    $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer) {
+        $reply = $peer($method, $params);
+        return $method === 'RSR_Configure' ? '2' : $reply;
+    };
     forceDue($m);
     flushLane($m);
-    check(!rows($m) && GetValue(mirrorID()) === 89, 'An integer protocol reply still completes delivery.');
+    $mirror = mirrorID();
+    check($mirror && !rows($m) && GetValue($mirror) === 89, 'Symcon string protocol reply enables delivery and acknowledges pending history.');
+    check(str_contains(GetValue($senderDebug), 'receiver #' . $receiverID . ' returned string ("2").'), 'Accepted string reply keeps its original type in the diagnostic.');
+
+    connectPeer();
+    ob_start();
+    $m->InstallRemoteScripts('Berlin');
+    $result = ob_get_clean();
+    event($m, 90);
+    forceDue($m);
+    flushLane($m);
+    check(str_starts_with($result, 'Success:') && !rows($m) && mirrorID() === $mirror && GetValue($mirror) === 90, 'An integer protocol reply still delivers to the same mirror.');
     check(!array_filter($GLOBALS['locks']),'No leaked semaphore.');
     echo 'PASS migration, controls and administration: '.$GLOBALS['testCount']." assertions\n";
 })();

@@ -61,7 +61,8 @@ trait RemoteSyncProvision
             $context = 'RSR_Configure on receiver #' . $id;
             $this->Log('Destination ' . $folder . ': calling ' . $context . '.');
             $reply = $this->rpcClient->RSR_Configure($id, $source, json_encode($settings, JSON_THROW_ON_ERROR));
-            if ($reply !== 2) {
+            // Symcon can serialize the receiver's integer return value as a string over JSON-RPC.
+            if ($reply !== 2 && $reply !== '2') {
                 $detail = get_debug_type($reply);
                 if (is_int($reply) || is_float($reply) || is_bool($reply)) {
                     $detail .= ' (' . json_encode($reply, JSON_PRESERVE_ZERO_FRACTION) . ')';
@@ -70,10 +71,11 @@ trait RemoteSyncProvision
                         ? ' (' . json_encode($reply) . ')'
                         : ' (' . strlen($reply) . ' bytes)';
                 }
-                throw new RuntimeException($context . ' returned ' . $detail . '. Expected int (2).');
+                throw new RuntimeException($context . ' returned ' . $detail . '. Expected int (2) or string ("2").');
             }
             $this->SetBuffer($key, json_encode(['signature' => $fingerprint, 'id' => $id], JSON_THROW_ON_ERROR));
-            $this->Log('Destination ' . $folder . ': ' . $context . ' returned int (2).');
+            $detail = $reply === 2 ? 'int (2)' : 'string ("2")';
+            $this->Log('Destination ' . $folder . ': ' . $context . ' returned ' . $detail . '.');
             return $id;
         } finally { IPS_SemaphoreLeave($lock); }
     }
