@@ -9,7 +9,23 @@ class RemoteSyncReceiver extends IPSModule
     {
         parent::Create();
         $this->RegisterAttributeString('Binding', '{}');
+        $this->RegisterPropertyBoolean('DebugMode', false);
         $this->MaintainVariable('Debug', 'Debug log', 3, '', 900, true);
+    }
+
+    public function ApplyChanges()
+    {
+        parent::ApplyChanges();
+        $this->SetBuffer('BatchSeen', '');
+        if (IPS_GetKernelRunlevel() !== KR_READY) return;
+        try {
+            $binding = $this->binding();
+            $this->logReceiver($binding
+                ? 'Receiver ready. Configured mapping count is ' . count($binding['maps']) . '. Waiting for a batch.'
+                : 'Receiver ready. Waiting for the sender to configure it.');
+        } catch (Throwable) {
+            $this->logReceiver('Receiver could not read its saved binding.');
+        }
     }
 
     private function binding(): array
@@ -57,14 +73,14 @@ class RemoteSyncReceiver extends IPSModule
                 return 2;
             });
         } catch (Throwable $failure) {
-            $this->logSetup('RSR_Configure failed while ' . $stage . ' (' . get_class($failure) . ').');
+            $this->logReceiver('RSR_Configure failed while ' . $stage . ' (' . get_class($failure) . ').');
             throw $failure;
         }
-        $this->logSetup('RSR_Configure saved the receiver binding and returned int (' . $reply . ').');
+        $this->logReceiver('RSR_Configure saved the receiver binding and returned int (' . $reply . ').');
         return $reply;
     }
 
-    private function logSetup(string $message): void
+    private function logReceiver(string $message): void
     {
         try {
             $this->LogMessage($message, KL_MESSAGE);
@@ -83,7 +99,7 @@ class RemoteSyncReceiver extends IPSModule
                 IPS_SemaphoreLeave($lock);
             }
         } catch (Throwable) {
-            // A diagnostic write must not alter the setup outcome.
+            // A diagnostic write must not alter setup or delivery.
         }
     }
 
@@ -136,43 +152,78 @@ class RemoteSyncReceiver extends IPSModule
 
     public function Receive(string $Packet): string
     {
-        $packet = json_decode($Packet, true, 64, JSON_THROW_ON_ERROR);
-        $binding = $this->binding();
-        if (!$binding || ($packet['Protocol'] ?? null) !== 2 || ($packet['Source'] ?? null) !== $binding['source']
-            || !is_array($packet['Batch'] ?? null) || count($packet['Batch']) > 400) throw new RuntimeException('Incompatible sender or protocol.');
+        $first = $this->GetBuffer('BatchSeen') === '';
+        $trace = $first || $this->ReadPropertyBoolean('DebugMode');
+        if ($trace) $this->logReceiver('RSR_Receive started.');
+        $stage = 'decoding the batch';
+        try {
+            $packet = json_decode($Packet, true, 64, JSON_THROW_ON_ERROR);
+            $stage = 'reading the saved binding';
+            $binding = $this->binding();
+            $stage = 'checking the sender, protocol and batch';
+            if (!$binding || ($packet['Protocol'] ?? null) !== 2 || ($packet['Source'] ?? null) !== $binding['source']
+                || !is_array($packet['Batch'] ?? null) || count($packet['Batch']) > 400) throw new RuntimeException('Incompatible sender or protocol.');
+        } catch (Throwable $failure) {
+            $this->logReceiver('RSR_Receive failed while ' . $stage . ' (' . get_class($failure) . ').');
+            throw $failure;
+        }
         $accepted = $errors = $blocked = [];
+        $mirrors = [];
+        $replayed = 0;
         foreach ($packet['Batch'] as $item) {
             $id = $item['EventID'] ?? '';
             $stream = ($item['MappingID'] ?? '') . '/' . ($item['LocalID'] ?? '');
+            $stage = 'checking stream order and item ownership';
             try {
                 if (isset($blocked[$stream])) throw new RuntimeException('Earlier value in this stream is pending.');
                 if (!preg_match('/^[a-f0-9]{32}$/D', $id) || ($item['Source'] ?? null) !== $binding['source']
                     || !isset($binding['maps'][$item['MappingID'] ?? '']) || $binding['maps'][$item['MappingID']] !== ($item['RemoteRootID'] ?? null)
                     || !is_int($item['LocalID'] ?? null) || $item['LocalID'] <= 0 || ($item['Key'] ?? null) !== $binding['key']) throw new RuntimeException('Invalid item ownership.');
-                $this->withLock(hash('sha256', $stream), function () use ($item, $binding, $packet) {
+                $stage = 'acquiring the stream lock';
+                $mirror = $this->withLock(hash('sha256', $stream), function () use ($item, $binding, $packet, &$stage): ?int {
+                    $stage = 'preparing the Full History receipt';
                     $reliable = !empty($item['Reliable']);
                     $receipt = $this->storage() . '/history/' . substr($item['EventID'], 0, 2) . '/' . $item['EventID'] . '.json';
-                    if ($reliable && is_file($receipt)) return;
+                    if ($reliable && is_file($receipt)) return null;
                     $intent = $receipt . '.pending';
                     $resuming = $reliable && is_file($intent);
                     if ($reliable && !$resuming) {
                         RemoteSyncJournalV2::durableWrite($intent, json_encode($item, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
                     }
-                    $this->applyMirror($item, $binding, $packet, $resuming);
+                    $remote = $this->applyMirror($item, $binding, $packet, $resuming, $stage);
+                    $stage = 'committing the Full History receipt';
                     if ($reliable) RemoteSyncJournalV2::finish($intent, $receipt);
+                    return $remote;
                 });
                 $accepted[] = $id;
+                if ($mirror === null) $replayed++;
+                if ($trace && $mirror > 0 && count($mirrors) < 8) {
+                    $mirrors[$item['LocalID'] . ' -> ' . $mirror] = true;
+                }
             } catch (Throwable $e) {
                 if (!empty($item['Reliable'])) $blocked[$stream] = true;
                 $errors[] = ['EventID' => $id, 'message' => $e->getMessage()];
-                $this->LogMessage('RemoteSync variable ' . (int)($item['LocalID'] ?? 0) . ': ' . $e->getMessage(), KL_MESSAGE);
+                if (count($errors) <= 5) {
+                    $this->logReceiver('RSR_Receive rejected source variable #' . (int)($item['LocalID'] ?? 0)
+                        . ' for remote root #' . (int)($item['RemoteRootID'] ?? 0) . ' while ' . $stage
+                        . ' (' . get_class($e) . ').');
+                }
             }
         }
-        return json_encode(['Protocol' => 2, 'Accepted' => $accepted, 'Errors' => $errors], JSON_THROW_ON_ERROR);
+        $reply = json_encode(['Protocol' => 2, 'Accepted' => $accepted, 'Errors' => $errors], JSON_THROW_ON_ERROR);
+        if ($first) $this->SetBuffer('BatchSeen', '1');
+        if ($trace || $errors) {
+            $message = 'RSR_Receive finished. Items ' . count($packet['Batch']) . ', accepted ' . count($accepted)
+                . ', rejected ' . count($errors) . ', already recorded ' . $replayed . '.';
+            if ($mirrors) $message .= ' Source -> mirror IDs: ' . implode(', ', array_keys($mirrors)) . '.';
+            $this->logReceiver($message);
+        }
+        return $reply;
     }
 
-    private function applyMirror(array $item, array $binding, array $packet, bool $resuming): void
+    private function applyMirror(array $item, array $binding, array $packet, bool $resuming, string &$stage): int
     {
+        $stage = 'validating the mirror value and path';
         $type = $item['Type'] ?? -1;
         $value = $item['Value'] ?? null;
         if (!match ($type) {0 => is_bool($value), 1 => is_int($value), 2 => is_float($value) || is_int($value), 3 => is_string($value), default => false}) {
@@ -185,6 +236,7 @@ class RemoteSyncReceiver extends IPSModule
         $owner = ['source' => $binding['source'], 'mapping' => $item['MappingID'], 'localID' => $item['LocalID']];
         $auto = !empty($packet['AutoCreate']);
         $delete = !empty($item['Delete']);
+        $stage = 'finding or creating the destination mirror';
         $remote = $this->withLock('root_' . $root, function () use ($root, $ref, $owner, $auto, $delete, $type, $path, $item) {
             $cacheKey = 'Mirror_' . $owner['mapping'] . '_' . $owner['localID'];
             $remembered = (int)$this->GetBuffer($cacheKey);
@@ -243,22 +295,26 @@ class RemoteSyncReceiver extends IPSModule
             $this->SetBuffer($cacheKey, (string)$remote);
             return $remote;
         });
-        if (!$remote) return;
+        if (!$remote) return 0;
         if ($delete) {
+            $stage = 'removing the destination mirror';
             if (IPS_GetChildrenIDs($remote)) throw new RuntimeException('Mirror has children. Delete refused.');
             if (!IPS_DeleteVariable($remote)) throw new RuntimeException('Mirror deletion failed.');
             $file = $this->storage() . '/bindings/' . $remote . '.json';
             if (is_file($file)) unlink($file);
             $claim = IPS_GetKernelDir() . 'remotesync-received/owners/' . $remote . '.json';
             if (is_file($claim)) unlink($claim);
-            return;
+            return $remote;
         }
+        $stage = 'applying the mirror profile and action';
         $profile = $item['Profile'] ?? '';
         if ($profile !== '') $this->applyProfile($remote, $profile, $packet['Profiles'][$profile] ?? null);
         $action = !empty($item['Action']) ? $binding['gateway'] : 0;
         if ((IPS_GetVariable($remote)['VariableCustomAction'] ?? 0) !== $action && !IPS_SetVariableCustomAction($remote, $action)) throw new RuntimeException('Action binding failed.');
-        if ($resuming && GetValue($remote) === $value) return;
+        $stage = 'writing the mirror value';
+        if ($resuming && GetValue($remote) === $value) return $remote;
         if (SetValue($remote, $value) === false) throw new RuntimeException('Value update failed.');
+        return $remote;
     }
 
     private function legacyCandidates(int $root, string $reference): array

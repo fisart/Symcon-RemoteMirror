@@ -2,7 +2,12 @@
     "elements": [
         {
             "type": "Label",
-            "caption": "This receiver is configured automatically by its RemoteSync sender. Open the Debug log variable below this instance to see setup results. Reverse actions require a working action handler on the source variable."
+            "caption": "Open Debug log below this instance for setup, the first batch after reload, and delivery errors. The same messages appear in the Symcon system log."
+        },
+        {
+            "type": "CheckBox",
+            "name": "DebugMode",
+            "caption": "Trace every received batch"
         }
     ],
     "actions": []

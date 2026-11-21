@@ -69,7 +69,7 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.2','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.3','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');
@@ -132,6 +132,44 @@ require __DIR__ . '/bootstrap.php';
     forceDue($m);
     flushLane($m);
     check(str_starts_with($result, 'Success:') && !rows($m) && mirrorID() === $mirror && GetValue($mirror) === 90, 'An integer protocol reply still delivers to the same mirror.');
+
+    $rx->ApplyChanges();
+    $waiting = 'Receiver ready. Configured mapping count is 1. Waiting for a batch.';
+    check(str_contains(GetValue($receiverDebug), $waiting) && in_array($waiting, $GLOBALS['logs'], true), 'Reload records that the configured receiver is waiting in both logs.');
+
+    event($m, 91);
+    forceDue($m);
+    flushLane($m);
+    $finished = 'RSR_Receive finished. Items 1, accepted 1, rejected 0, already recorded 0. Source -> mirror IDs: 20001 -> ' . $mirror . '.';
+    check(str_contains(GetValue($receiverDebug), $finished) && in_array($finished, $GLOBALS['logs'], true), 'First batch after the reload logs the same mirror ID to both sinks.');
+    check(!rows($m) && GetValue($mirror) === 91, 'First batch after the reload still updates the original mirror.');
+
+    $quietLog = GetValue($receiverDebug);
+    event($m, 92);
+    forceDue($m);
+    flushLane($m);
+    check(GetValue($receiverDebug) === $quietLog && GetValue($mirror) === 92, 'Later successful batches deliver quietly by default.');
+
+    $rx->properties['DebugMode'] = true;
+    event($m, 93);
+    forceDue($m);
+    flushLane($m);
+    check(substr_count(GetValue($receiverDebug), $finished) > substr_count($quietLog, $finished), 'Verbose tracing records each completed batch.');
+
+    $GLOBALS['rejectValue'] = 94;
+    event($m, 94);
+    forceDue($m);
+    flushLane($m);
+    $rejected = 'RSR_Receive rejected source variable #20001 for remote root #10002 while writing the mirror value (RuntimeException).';
+    check(str_contains(GetValue($receiverDebug), $rejected) && in_array($rejected, $GLOBALS['logs'], true), 'Both logs record the rejected item and failing step.');
+    check(count(rows($m)) === 1 && GetValue($mirror) === 93, 'Rejected history remains queued.');
+    unset($GLOBALS['rejectValue']);
+
+    $opaque = 'synthetic private payload for log verification';
+    throws(fn() => $rx->Receive($opaque), 'Invalid packet still fails.');
+    $badPacket = 'RSR_Receive failed while decoding the batch (JsonException).';
+    check(str_contains(GetValue($receiverDebug), $badPacket) && in_array($badPacket, $GLOBALS['logs'], true), 'Both logs record the stage for rejected packets.');
+    check(!str_contains(GetValue($receiverDebug), $opaque) && !str_contains(implode("\n", $GLOBALS['logs']), $opaque), 'Receiver diagnostics omit packet contents.');
     check(!array_filter($GLOBALS['locks']),'No leaked semaphore.');
     echo 'PASS migration, controls and administration: '.$GLOBALS['testCount']." assertions\n";
 })();
