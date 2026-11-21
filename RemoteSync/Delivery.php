@@ -48,15 +48,46 @@ trait RemoteSyncDelivery
     private function laneMeta(string $key): array {return json_decode($this->GetBuffer('RSM_'.$key),true)?:['normal'=>0,'due'=>0,'scheduled'=>0];}
     private function writeLaneMeta(string $key,array $meta): void {$this->SetBuffer('RSM_'.$key,json_encode($meta,JSON_THROW_ON_ERROR));}
     private function lanePending(string $folder,int $lane): bool {return ($this->laneMeta($this->laneKey($folder,$lane))['normal']??0)>0||$this->journal($folder,$lane)->pending();}
+
+    private function logPausedMapping(string $folder, string $object, int $objectID, int $destinationRoot = 0): void
+    {
+        $key = 'Missing_' . hash('sha256', $folder . '/' . $object . '/' . $objectID . '/' . $destinationRoot);
+        if ((int)$this->GetBuffer($key) > time()) return;
+        $this->SetBuffer($key, (string)(time() + 60));
+        $root = $destinationRoot ? ' for destination root #' . $destinationRoot : '';
+        $this->Log('Destination ' . $folder . ': synchronization paused' . $root
+            . ' because ' . $object . ' #' . $objectID . ' is missing.', KL_WARNING);
+    }
+
     private function AddToBuffer($localID,$Value=null,bool $unchanged=false)
     {
         if(IPS_GetKernelRunlevel()!==KR_READY||!$this->ReadPropertyBoolean('SyncEnabled')||!$this->LoadConfig())return;
         foreach($this->config['Index'][(int)$localID]??[] as $item){
             if(empty($item['Active'])&&empty($item['Delete']))continue;
+            $folder = $item['Folder'];
+            $localRoot = (int)$item['LocalRootID'];
+            if (!IPS_ObjectExists($localRoot)) {
+                $this->logPausedMapping($folder, 'source root', $localRoot);
+                continue;
+            }
+            if (!IPS_ObjectExists((int)$localID)) {
+                $this->logPausedMapping($folder, 'source variable', (int)$localID);
+                continue;
+            }
             $history=!empty($item['FullHistory']);$immediate=!empty($item['Immediate'])||!empty($item['Delete']);
             if($unchanged&&$this->ReadPropertyBoolean('OnlyChangedValues')&&!$history&&!$immediate){$this->CountTraffic(['FilteredUpdates'=>1]);continue;}
-            $p=$this->GetPayload((int)$localID,$item,$this->config['Roots'],$Value);if(!$p){if($history)throw new RuntimeException('Full History mapping unavailable.');continue;}
-            $folder = $item['Folder'];
+            try {
+                $p = $this->GetPayload((int)$localID, $item, $this->config['Roots'], $Value);
+            } catch (Throwable $failure) {
+                if (IPS_ObjectExists($localRoot) && IPS_ObjectExists((int)$localID)) throw $failure;
+                $p = null;
+            }
+            if (!$p) {
+                if (!IPS_ObjectExists($localRoot)) $this->logPausedMapping($folder, 'source root', $localRoot);
+                elseif (!IPS_ObjectExists((int)$localID)) $this->logPausedMapping($folder, 'source variable', (int)$localID);
+                elseif ($history) throw new RuntimeException('Full History mapping unavailable.');
+                continue;
+            }
             $lane = ($localID % max(1, $this->ReadPropertyInteger('LaneCount'))) + 1;
             if ($history) {
                 foreach ($this->lanes() as $previous) {
@@ -216,10 +247,37 @@ trait RemoteSyncDelivery
                     throw new RuntimeException('Restore the saved target for this pending history lane.');
                 }
             }
+            if (!$history && !$normal) return;
+            if (!$target || !$this->InitConnectionForFolder($target)) throw new RuntimeException('Target connection unavailable.');
+            $setup = $this->receiverFor($FolderName, $target);
+            // Take one availability decision per stream, so its FIFO prefix stays intact.
+            $eligible = [];
+            $canDeliver = function (array $item) use ($FolderName, $setup, &$eligible): bool {
+                $stream = $item['MappingID'] . '/' . $item['LocalID'];
+                if (isset($eligible[$stream])) return $eligible[$stream];
+                $root = (int)$item['LocalSetID'];
+                $variable = (int)$item['LocalID'];
+                if (!IPS_ObjectExists($root)) {
+                    $this->logPausedMapping($FolderName, 'source root', $root, (int)$item['RemoteRootID']);
+                    return $eligible[$stream] = false;
+                }
+                if (!IPS_ObjectExists($variable)) {
+                    $this->logPausedMapping($FolderName, 'source variable', $variable, (int)$item['RemoteRootID']);
+                    return $eligible[$stream] = false;
+                }
+                return $eligible[$stream] = ($setup['maps'][$item['MappingID']] ?? null) === $item['RemoteRootID'];
+            };
+            $outgoingHistory = array_filter($history, static fn(array $row): bool => $canDeliver($row['payload']));
+            $pausedHistory = array_diff_key($history, $outgoingHistory);
+            if ($pausedHistory) $journal->settle($pausedHistory, []);
+            $history = $outgoingHistory;
+            $offeredNormal = array_filter($normal, $canDeliver);
+            if (count($normal) !== count($offeredNormal)) {
+                $this->CountTraffic(['DroppedUpdates' => count($normal) - count($offeredNormal)]);
+            }
+            $normal = $offeredNormal;
             $batch = array_merge(array_column($history, 'payload'), $normal);
             if (!$batch) return;
-            if (!$target || !$this->InitConnectionForFolder($target)) throw new RuntimeException('Target connection unavailable.');
-            $receiver = $this->receiverFor($FolderName, $target);
             $profiles = [];
             if ($this->ReadPropertyBoolean('ReplicateProfiles')) {
                 foreach ($batch as $item) {
@@ -229,7 +287,7 @@ trait RemoteSyncDelivery
             }
             $packet = json_encode(['Protocol' => 2, 'Source' => $this->ReadAttributeString('SourceIdentity'),
                 'Batch' => $batch, 'Profiles' => $profiles, 'AutoCreate' => $this->ReadPropertyBoolean('AutoCreate')], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
-            $reply = $this->rpcClient->RSR_Receive($receiver, $packet);
+            $reply = $this->rpcClient->RSR_Receive($setup['id'], $packet);
             $ack = is_string($reply) ? json_decode($reply, true, 64, JSON_THROW_ON_ERROR) : null;
             if (($ack['Protocol'] ?? 0) !== 2 || !is_array($ack['Accepted'] ?? null) || !is_array($ack['Errors'] ?? null)) throw new RuntimeException('Invalid delivery acknowledgement.');
             $offered = array_fill_keys(array_column($batch, 'EventID'), true);
@@ -240,6 +298,12 @@ trait RemoteSyncDelivery
             }
             $normal = array_filter($normal, static fn($item) => !isset($accepted[$item['EventID']]));
             $journal->settle($history, array_keys($accepted));
+            foreach ($ack['Errors'] as $error) {
+                if (isset($error['MissingRootID'])) {
+                    $this->SetBuffer('Companion_' . hash('sha256', $FolderName), '');
+                    break;
+                }
+            }
             $failed = count($accepted) !== count($batch) || $ack['Errors'];
             $this->CountTraffic(['AcceptedUpdates' => count($accepted), 'DroppedUpdates' => count($normal),
                 'SuccessfulBatches' => $failed ? 0 : 1, 'FailedBatches' => $failed ? 1 : 0]);

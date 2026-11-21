@@ -73,7 +73,7 @@ function connectPeer(?callable $intercept=null):void{
     $GLOBALS['rpcHandler']=static function($method,$args)use($intercept){
         if($intercept){$result=$intercept($method,$args);if($result!==null)return $result;}
         if ($method==='IPS_GetKernelVersion') return '8.0';
-        $permitted=['IPS_GetModuleList','IPS_GetInstanceListByModuleID','IPS_GetChildrenIDs','IPS_GetObject','IPS_CreateInstance','IPS_GetInstance','IPS_SetParent','IPS_SetIdent','IPS_SetName','RSR_Configure','RSR_Receive'];
+        $permitted=['IPS_GetModuleList','IPS_GetInstanceListByModuleID','IPS_GetChildrenIDs','IPS_GetObject','IPS_ObjectExists','IPS_CreateInstance','IPS_GetInstance','IPS_SetParent','IPS_SetIdent','IPS_SetName','RSR_Configure','RSR_Receive'];
         if(!in_array($method,$permitted,true))throw new RuntimeException('Unexpected fixture RPC '.$method);
         return $method(...$args);
     };

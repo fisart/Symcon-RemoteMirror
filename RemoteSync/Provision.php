@@ -5,32 +5,62 @@ trait RemoteSyncProvision
 {
     private const RECEIVER_MODULE = '{D07F247A-9FC0-49BF-961D-D2D54D0B9648}';
 
-    private function receiverFor(string $folder, array $target): int
+    private function receiverFor(string $folder, array $target): array
     {
         $source = $this->ReadAttributeString('SourceIdentity');
         $maps = [];
+        $localMappings = [];
+        $missingSourceRoot = false;
         foreach (json_decode($this->ReadPropertyString('Roots'), true, 64, JSON_THROW_ON_ERROR) as $root) {
             if ($root['TargetFolder'] !== $folder) continue;
-            $mapping = hash('sha256', $folder . '|' . (int)$root['LocalRootID'] . '|' . (int)$root['RemoteRootID']);
+            $localRoot = (int)$root['LocalRootID'];
+            if (!IPS_ObjectExists($localRoot)) {
+                $this->logPausedMapping($folder, 'source root', $localRoot, (int)$root['RemoteRootID']);
+                $missingSourceRoot = true;
+                continue;
+            }
+            $mapping = hash('sha256', $folder . '|' . $localRoot . '|' . (int)$root['RemoteRootID']);
             $maps[$mapping] = (int)$root['RemoteRootID'];
+            $localMappings[$localRoot] = $mapping;
         }
-        $actions = false;
+        $actionMappings = [];
         foreach (json_decode($this->ReadAttributeString('SyncListCache'), true, 64, JSON_THROW_ON_ERROR) as $row) {
-            if ($row['Folder'] === $folder && !empty($row['Active']) && !empty($row['Action'])) { $actions = true; break; }
+            if ($row['Folder'] === $folder && !empty($row['Active']) && !empty($row['Action']) && IPS_ObjectExists((int)$row['ObjectID'])) {
+                $mapping = $localMappings[(int)$row['LocalRootID']] ?? null;
+                if ($mapping !== null) $actionMappings[$mapping] = true;
+            }
         }
         $settings = [
-            'actions' => $actions,
+            'actions' => false,
             'key' => $this->ReadPropertyString('LocalServerKey'), 'maps' => $maps,
             'scriptRoot' => (int)$target['RemoteScriptRootID'], 'secrets' => (int)$target['RemoteSecretsID'],
             'timeout' => $this->ReadPropertyInteger('RequestTimeout')
         ];
-        $fingerprint = hash('sha256', json_encode([$target, $settings, $this->rpcClient->endpoint(), $source], JSON_THROW_ON_ERROR));
+        $fingerprint = hash('sha256', json_encode([$target, $settings, $actionMappings, $missingSourceRoot, $this->rpcClient->endpoint(), $source], JSON_THROW_ON_ERROR));
         $key = 'Companion_' . hash('sha256', $folder);
         $lock = 'RS_Setup_' . $this->InstanceID . '_' . hash('sha256', $folder);
         if (!IPS_SemaphoreEnter($lock, 10000)) throw new RuntimeException('Destination setup is busy.');
         try {
             $cache = json_decode($this->GetBuffer($key), true);
-            if (($cache['signature'] ?? '') === $fingerprint) return $cache['id'];
+            if (($cache['signature'] ?? '') === $fingerprint && isset($cache['maps'])
+                && (!$cache['recheckAt'] || $cache['recheckAt'] > time())) return $cache;
+
+            $available = [];
+            foreach (array_unique($maps) as $remoteRoot) {
+                $exists = $this->rpcClient->IPS_ObjectExists($remoteRoot);
+                if (!is_bool($exists)) throw new RuntimeException('Cannot verify remote root #' . $remoteRoot . '.');
+                $available[$remoteRoot] = $exists;
+                if (!$exists) $this->logPausedMapping($folder, 'destination root', $remoteRoot);
+            }
+            $settings['maps'] = array_filter($maps, static fn(int $root): bool => $available[$root]);
+            $settings['actions'] = (bool)array_intersect_key($actionMappings, $settings['maps']);
+            $recheckAt = $missingSourceRoot || count($settings['maps']) !== count($maps) ? time() + 30 : 0;
+            if (($cache['signature'] ?? '') === $fingerprint && ($cache['maps'] ?? null) === $settings['maps']) {
+                $cache['recheckAt'] = $recheckAt;
+                $this->SetBuffer($key, json_encode($cache, JSON_THROW_ON_ERROR));
+                return $cache;
+            }
+
             $ident = 'RS_Companion_' . substr(hash('sha256', $source . '/' . $folder), 0, 32);
             $id = 0;
             foreach ($this->rpcClient->IPS_GetChildrenIDs($settings['scriptRoot']) as $child) {
@@ -73,10 +103,11 @@ trait RemoteSyncProvision
                 }
                 throw new RuntimeException($context . ' returned ' . $detail . '. Expected int (2) or string ("2").');
             }
-            $this->SetBuffer($key, json_encode(['signature' => $fingerprint, 'id' => $id], JSON_THROW_ON_ERROR));
+            $setup = ['signature' => $fingerprint, 'id' => $id, 'maps' => $settings['maps'], 'recheckAt' => $recheckAt];
+            $this->SetBuffer($key, json_encode($setup, JSON_THROW_ON_ERROR));
             $detail = $reply === 2 ? 'int (2)' : 'string ("2")';
             $this->Log('Destination ' . $folder . ': ' . $context . ' returned ' . $detail . '.');
-            return $id;
+            return $setup;
         } finally { IPS_SemaphoreLeave($lock); }
     }
 
@@ -88,7 +119,8 @@ trait RemoteSyncProvision
         foreach (json_decode($this->ReadPropertyString('Targets'), true) ?: [] as $target) {
             try {
                 if (!$this->InitConnectionForFolder($target)) throw new RuntimeException('Check the target Secrets reference and HTTPS endpoint.');
-                $this->receiverFor($target['Name'], $target);
+                $setup = $this->receiverFor($target['Name'], $target);
+                $retry = $retry || $setup['recheckAt'] > 0;
             } catch (Throwable $e) {
                 $this->Log('Destination ' . $target['Name'] . ': ' . $e->getMessage(), KL_ERROR);
                 $retry = true;

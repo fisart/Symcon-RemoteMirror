@@ -1,4 +1,4 @@
-# RemoteSync 1.14.4
+# RemoteSync 1.14.5
 
 RemoteSync mirrors IP-Symcon variables between installations. The same library contains the existing sender and the new RemoteSync Receiver companion. Upgrade the existing library on each participating installation. RemoteSync then creates and configures its receiver from the saved target, root and Secrets references.
 
@@ -7,6 +7,8 @@ For a GitHub-based upgrade, select `feat/remotesync-1.14.0` for the existing Rem
 Version 1.14.1 adds receiver setup diagnostics. Compare the sender's **Debug log** with the **Debug log** under the destination's **RemoteSync Receiver** instance. The sender records the protocol reply type, and the receiver records its setup stage and result.
 
 Version 1.14.2 fixes receiver setup when Symcon returns protocol 2 as the JSON-RPC string `"2"`. Update the sender to 1.14.2. Its existing 1.14.1 destination receivers can continue serving it.
+
+Version 1.14.5 pauses delivery for a missing source object or destination root and logs its object ID. Healthy mappings continue to sync. Pending **Full History** stays queued for the original mapping.
 
 Version 1.14.4 handles incomplete Let's Encrypt YE2 chains on sender HTTPS connections. It uses bundled public issuers that validate against the installation's CA file and keeps certificate and hostname verification enabled. Existing targets and Secrets entries carry forward.
 

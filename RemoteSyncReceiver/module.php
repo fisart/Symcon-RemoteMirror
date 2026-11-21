@@ -54,8 +54,13 @@ class RemoteSyncReceiver extends IPSModule
                 if (!is_string($new['key'] ?? null) || !is_array($new['maps'] ?? null) || !is_int($new['secrets'] ?? null)
                     || ($new['scriptRoot'] ?? null) !== IPS_GetParent($this->InstanceID)) throw new RuntimeException('Invalid receiver configuration.');
                 foreach ($new['maps'] as $mapping => $root) {
-                    if (!preg_match('/^[a-f0-9]{64}$/D', $mapping) || !is_int($root) || !IPS_ObjectExists($root)
-                        || !in_array(IPS_GetObject($root)['ObjectType'], [0, 1], true)) throw new RuntimeException('Remote root is unavailable.');
+                    if (!preg_match('/^[a-f0-9]{64}$/D', $mapping) || !is_int($root) || $root <= 0
+                        || (IPS_ObjectExists($root) && !in_array(IPS_GetObject($root)['ObjectType'], [0, 1], true))) {
+                        throw new RuntimeException('Invalid remote root.');
+                    }
+                    // Receive checks the root again before writing any item. A deletion during setup
+                    // can therefore leave this mapping paused without rejecting the other mappings.
+                    if (!IPS_ObjectExists($root)) $this->logReceiver('Synchronization paused because destination root #' . $root . ' is missing.');
                 }
                 if (!empty($new['actions'])) {
                     $stage = 'checking reverse HTTPS';
@@ -174,17 +179,24 @@ class RemoteSyncReceiver extends IPSModule
             $id = $item['EventID'] ?? '';
             $stream = ($item['MappingID'] ?? '') . '/' . ($item['LocalID'] ?? '');
             $stage = 'checking stream order and item ownership';
+            $verifiedRoot = 0;
             try {
                 if (isset($blocked[$stream])) throw new RuntimeException('Earlier value in this stream is pending.');
                 if (!preg_match('/^[a-f0-9]{32}$/D', $id) || ($item['Source'] ?? null) !== $binding['source']
                     || !isset($binding['maps'][$item['MappingID'] ?? '']) || $binding['maps'][$item['MappingID']] !== ($item['RemoteRootID'] ?? null)
                     || !is_int($item['LocalID'] ?? null) || $item['LocalID'] <= 0 || ($item['Key'] ?? null) !== $binding['key']) throw new RuntimeException('Invalid item ownership.');
+                $verifiedRoot = $item['RemoteRootID'];
                 $stage = 'acquiring the stream lock';
                 $mirror = $this->withLock(hash('sha256', $stream), function () use ($item, $binding, $packet, &$stage): ?int {
                     $stage = 'preparing the Full History receipt';
                     $reliable = !empty($item['Reliable']);
                     $receipt = $this->storage() . '/history/' . substr($item['EventID'], 0, 2) . '/' . $item['EventID'] . '.json';
                     if ($reliable && is_file($receipt)) return null;
+                    $stage = 'checking the destination root';
+                    if (!IPS_ObjectExists($item['RemoteRootID'])) throw new RuntimeException('Destination root #' . $item['RemoteRootID'] . ' is missing.');
+                    if (!in_array(IPS_GetObject($item['RemoteRootID'])['ObjectType'], [0, 1], true)) {
+                        throw new RuntimeException('Destination root #' . $item['RemoteRootID'] . ' is not a category or instance.');
+                    }
                     $intent = $receipt . '.pending';
                     $resuming = $reliable && is_file($intent);
                     if ($reliable && !$resuming) {
@@ -202,7 +214,9 @@ class RemoteSyncReceiver extends IPSModule
                 }
             } catch (Throwable $e) {
                 if (!empty($item['Reliable'])) $blocked[$stream] = true;
-                $errors[] = ['EventID' => $id, 'message' => $e->getMessage()];
+                $error = ['EventID' => $id, 'message' => $e->getMessage()];
+                if ($verifiedRoot && !IPS_ObjectExists($verifiedRoot)) $error['MissingRootID'] = $verifiedRoot;
+                $errors[] = $error;
                 if (count($errors) <= 5) {
                     $this->logReceiver('RSR_Receive rejected source variable #' . (int)($item['LocalID'] ?? 0)
                         . ' for remote root #' . (int)($item['RemoteRootID'] ?? 0) . ' while ' . $stage
@@ -279,7 +293,14 @@ class RemoteSyncReceiver extends IPSModule
             $remote = $matches[0] ?? 0;
             if (!$remote) {
                 if ($delete) return 0;
-                if (!$auto) throw new RuntimeException('Existing mirror missing and automatic creation disabled.');
+                if (!$auto) {
+                    if ($remembered) {
+                        $message = 'Destination mirror #' . $remembered . ' is missing and automatic creation is disabled.';
+                        $this->logReceiver($message);
+                        throw new RuntimeException($message);
+                    }
+                    throw new RuntimeException('Existing mirror missing and automatic creation disabled.');
+                }
                 $remote = IPS_CreateVariable($type);
                 if (!$remote || IPS_SetInfo($remote, $ref) === false || IPS_SetName($remote, $item['Name']) === false
                     || IPS_SetParent($remote, $parent) === false || IPS_SetIdent($remote, $ident) === false) throw new RuntimeException('Cannot create destination mirror.');

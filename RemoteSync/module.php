@@ -12,7 +12,7 @@ class RemoteSync extends IPSModule
 {
     use RemoteSyncDelivery, RemoteSyncProvision, RemoteSyncConfiguration, RemoteSyncAdministration;
 
-    const VERSION = '1.14.4';
+    const VERSION = '1.14.5';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -312,8 +312,10 @@ class RemoteSync extends IPSModule
             $target = $this->GetTargetConfig($Folder);
             if (!$target || !$this->InitConnectionForFolder($target)) throw new RuntimeException('Target connection unavailable.');
             $this->SetBuffer('Companion_' . hash('sha256', $Folder), '');
-            $this->receiverFor($Folder, $target);
-            echo 'Success: destination companion verified.';
+            $setup = $this->receiverFor($Folder, $target);
+            echo $setup['recheckAt']
+                ? 'Destination companion verified. Check the Symcon message log for paused root mappings.'
+                : 'Success: destination companion verified.';
         } catch (Throwable $e) {
             echo 'Error: ' . $e->getMessage();
         }
@@ -338,7 +340,12 @@ class RemoteSync extends IPSModule
         $work = false;
         foreach (json_decode($this->ReadAttributeString('SyncListCache'), true) ?: [] as $row) {
             $id = (int)($row['ObjectID'] ?? 0);
-            if (!$id || !IPS_ObjectExists($id)) continue;
+            if (!$id || !IPS_ObjectExists($id)) {
+                if ($id && (!empty($row['Active']) || !empty($row['Delete']))) {
+                    $this->logPausedMapping($row['Folder'], 'source variable', $id);
+                }
+                continue;
+            }
             if (!empty($row['Active']) && empty($row['Delete']) && $enabled) $this->RegisterMessage($id, VM_UPDATE);
             $work = $work || !empty($row['Active']) || !empty($row['Delete']);
         }
