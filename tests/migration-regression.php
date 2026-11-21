@@ -69,7 +69,7 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.3','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.4','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');
