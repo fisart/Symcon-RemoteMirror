@@ -40,6 +40,108 @@ check($m->timers['BatchDispatch']>=20000,'Individual stream retries sleep until 
 event($m,35,true,20002);flushLane($m);
 check(GetValue(IPS_GetObjectIDByIdent('Rem_20002',10002))===35 && count(rows($m))===2,'Healthy traffic continues while another stream cools down.');
 
+$m = fresh(true);
+obj(10004, 0);
+obj(10005, 0);
+obj(20002, 2, 10005);
+$roots = json_decode($m->properties['Roots'], true);
+$roots[] = ['LocalRootID' => 10005, 'TargetFolder' => 'Berlin', 'RemoteRootID' => 10004];
+$m->properties['Roots'] = json_encode($roots);
+$selection = json_decode($m->attributes['SyncListCache'], true);
+$selection[] = array_replace($selection[0], ['ObjectID' => 20002, 'LocalRootID' => 10005]);
+$m->attributes['SyncListCache'] = json_encode($selection);
+$m->ApplyChanges();
+connectPeer(static function(string $method, array $args) {
+    if ($method === 'RSR_Configure') {
+        foreach (json_decode($args[2], true)['maps'] as $root) {
+            if (!IPS_ObjectExists($root)) throw new RuntimeException('Older receiver rejects missing roots.');
+        }
+    }
+    return null;
+});
+event($m, 14);
+event($m, 25, true, 20002);
+unset($GLOBALS['objects'][10002]);
+flushLane($m);
+$healthyMirror = IPS_GetObjectIDByIdent('Rem_20002', 10004);
+$pending = array_values(rows($m));
+check(count($pending) === 1 && $pending[0]['Value'] === 14 && GetValue($healthyMirror) === 25,
+    'A missing destination root leaves only its history queued and allows another mapping through an older receiver.');
+check(count(array_filter($GLOBALS['logs'], static fn(string $line): bool => str_contains($line, 'destination root #10002 is missing'))) === 1,
+    'Missing destination root is logged by ID.');
+event($m, 15);
+event($m, 26, true, 20002);
+flushLane($m);
+check(count(rows($m)) === 2 && GetValue($healthyMirror) === 26, 'A paused destination root continues capturing its Full History.');
+
+$makePendingStreamDue = static function(RemoteSync $sender): void {
+    $event = array_values(rows($sender))[0];
+    $cursorFile = glob(IPS_GetKernelDir() . 'remotesync/*/*/*/streams/' . $event['Stream'] . '/state.json')[0];
+    $cursor = json_decode(file_get_contents($cursorFile), true);
+    $cursor['after'] = 0;
+    file_put_contents($cursorFile, json_encode($cursor));
+};
+$cacheKey = 'Companion_' . hash('sha256', 'Berlin');
+$cache = json_decode($m->buffers[$cacheKey], true);
+$cache['recheckAt'] = 1;
+$m->buffers[$cacheKey] = json_encode($cache);
+obj(10002, 0);
+$makePendingStreamDue($m);
+flushLane($m);
+check(!rows($m) && GetValue(mirrorID()) === 15 && $GLOBALS['valueWrites'][mirrorID()] === 2,
+    'A restored root resumes the original history stream in order.');
+
+connectPeer();
+event($m, 16);
+event($m, 27, true, 20002);
+unset($GLOBALS['objects'][10002]);
+flushLane($m);
+check(count(rows($m)) === 1 && GetValue($healthyMirror) === 27 && !isset($m->buffers[$cacheKey]),
+    'A root deleted after setup is rejected independently and invalidates the cached roots.');
+
+obj(10002, 0);
+$savedSource = $GLOBALS['objects'][20001];
+unset($GLOBALS['objects'][20001]);
+$makePendingStreamDue($m);
+$GLOBALS['values'][20002] = 28;
+$m->ProcessSync();
+flushLane($m);
+check(count(rows($m)) === 1 && GetValue($healthyMirror) === 28,
+    'A missing source variable leaves its queued history and allows another mapping through a sync pass.');
+check((bool)array_filter($GLOBALS['logs'], static fn(string $line): bool => str_contains($line, 'source variable #20001 is missing')),
+    'Missing source variable is logged by ID.');
+
+$GLOBALS['objects'][20001] = $savedSource;
+$savedRoot = $GLOBALS['objects'][10001];
+unset($GLOBALS['objects'][10001]);
+$makePendingStreamDue($m);
+event($m, 29, true, 20002);
+flushLane($m);
+check(count(rows($m)) === 1 && GetValue($healthyMirror) === 29,
+    'A missing source root leaves its queued history and allows another mapping to sync.');
+check((bool)array_filter($GLOBALS['logs'], static fn(string $line): bool => str_contains($line, 'source root #10001 is missing')),
+    'Missing source root is logged by ID.');
+$GLOBALS['objects'][10001] = $savedRoot;
+$makePendingStreamDue($m);
+flushLane($m);
+check(!rows($m) && GetValue(mirrorID()) === 16, 'Restoring the original source objects releases the queued event.');
+
+$m->properties['AutoCreate'] = false;
+$missingMirror = mirrorID();
+$savedMirror = $GLOBALS['objects'][$missingMirror];
+unset($GLOBALS['objects'][$missingMirror]);
+event($m, 17);
+event($m, 30, true, 20002);
+flushLane($m);
+check(count(rows($m)) === 1 && GetValue($healthyMirror) === 30,
+    'With Auto-Create disabled, a deleted mirror pauses its stream and healthy delivery continues.');
+check((bool)array_filter($GLOBALS['logs'], static fn(string $line): bool => str_contains($line, 'Destination mirror #' . $missingMirror . ' is missing')),
+    'The previously confirmed mirror is logged by its ID.');
+$GLOBALS['objects'][$missingMirror] = $savedMirror;
+$makePendingStreamDue($m);
+flushLane($m);
+check(!rows($m) && GetValue($missingMirror) === 17, 'Restoring the mirror releases queued history without changing its object ID.');
+
 $m=fresh(true);connectPeer();event($m,91);
 $GLOBALS['duringRequest']=static function()use($m){event($m,92);};
 flushLane($m);check(count(rows($m))===1 && array_values(rows($m))[0]['Value']===92,'New event survives in-flight send.');
