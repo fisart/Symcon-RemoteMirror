@@ -1,8 +1,10 @@
-# RemoteSync 1.14.0
+# RemoteSync 1.14.1
 
 RemoteSync mirrors IP-Symcon variables between installations. The same library contains the existing sender and the new RemoteSync Receiver companion. Upgrade the existing library on each participating installation. RemoteSync then creates and configures its receiver from the saved target, root and Secrets references.
 
 For a GitHub-based upgrade, select `feat/remotesync-1.14.0` for the existing RemoteSync library in Symcon Module Control. Keep the existing sender instance and its saved configuration. Apply the same library version to destinations during the same maintenance window.
+
+Version 1.14.1 adds receiver setup diagnostics. Compare the sender's **Debug log** with the **Debug log** under the destination's **RemoteSync Receiver** instance. The sender records the protocol reply type, and the receiver records its setup stage and result.
 
 **Immediate** removes the batching delay. **Full History** retains every accepted update, including repeated equal values, until the receiver acknowledges it. Select both for urgent signals whose history matters. Ordinary updates keep the latest pending value and may be dropped after a failed send.
 

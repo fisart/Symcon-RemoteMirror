@@ -9,6 +9,7 @@ class RemoteSyncReceiver extends IPSModule
     {
         parent::Create();
         $this->RegisterAttributeString('Binding', '{}');
+        $this->MaintainVariable('Debug', 'Debug log', 3, '', 900, true);
     }
 
     private function binding(): array
@@ -27,28 +28,63 @@ class RemoteSyncReceiver extends IPSModule
     /** Called by the sender over the existing authenticated Symcon JSON-RPC connection. */
     public function Configure(string $Source, string $Settings): int
     {
-        return $this->withLock('setup', function () use ($Source, $Settings) {
-            $new = json_decode($Settings, true, 32, JSON_THROW_ON_ERROR);
-            $old = $this->binding();
-            if (!preg_match('/^[a-f0-9]{32}$/D', $Source) || ($old && $old['source'] !== $Source)) throw new RuntimeException('Receiver belongs to another sender.');
-            if (!is_string($new['key'] ?? null) || !is_array($new['maps'] ?? null) || !is_int($new['secrets'] ?? null)
-                || ($new['scriptRoot'] ?? null) !== IPS_GetParent($this->InstanceID)) throw new RuntimeException('Invalid receiver configuration.');
-            foreach ($new['maps'] as $mapping => $root) {
-                if (!preg_match('/^[a-f0-9]{64}$/D', $mapping) || !is_int($root) || !IPS_ObjectExists($root)
-                    || !in_array(IPS_GetObject($root)['ObjectType'], [0, 1], true)) throw new RuntimeException('Remote root is unavailable.');
+        $stage = 'acquiring the setup lock';
+        try {
+            $reply = $this->withLock('setup', function () use ($Source, $Settings, &$stage) {
+                $stage = 'validating the sender and roots';
+                $new = json_decode($Settings, true, 32, JSON_THROW_ON_ERROR);
+                $old = $this->binding();
+                if (!preg_match('/^[a-f0-9]{32}$/D', $Source) || ($old && $old['source'] !== $Source)) throw new RuntimeException('Receiver belongs to another sender.');
+                if (!is_string($new['key'] ?? null) || !is_array($new['maps'] ?? null) || !is_int($new['secrets'] ?? null)
+                    || ($new['scriptRoot'] ?? null) !== IPS_GetParent($this->InstanceID)) throw new RuntimeException('Invalid receiver configuration.');
+                foreach ($new['maps'] as $mapping => $root) {
+                    if (!preg_match('/^[a-f0-9]{64}$/D', $mapping) || !is_int($root) || !IPS_ObjectExists($root)
+                        || !in_array(IPS_GetObject($root)['ObjectType'], [0, 1], true)) throw new RuntimeException('Remote root is unavailable.');
+                }
+                if (!empty($new['actions'])) {
+                    $stage = 'checking reverse HTTPS';
+                    $secret = SEC_GetSecret($new['secrets'], $new['key']);
+                    $connection = RemoteSyncConnectionV2::credentials($secret);
+                    $version = RemoteSyncConnectionV2::call($connection, 'IPS_GetKernelVersion', [], $new['timeout']);
+                    if (!is_string($version) || $version === '') throw new RuntimeException('Cannot verify the reverse HTTPS endpoint.');
+                }
+                $stage = 'setting up the action adapter';
+                $this->SetBuffer('LegacyIndex', '');
+                $new['source'] = $Source;
+                $new['gateway'] = $this->configureGateway($new['scriptRoot']);
+                $stage = 'saving the receiver binding';
+                $this->WriteAttributeString('Binding', json_encode($new, JSON_THROW_ON_ERROR));
+                return 2;
+            });
+        } catch (Throwable $failure) {
+            $this->logSetup('RSR_Configure failed while ' . $stage . ' (' . get_class($failure) . ').');
+            throw $failure;
+        }
+        $this->logSetup('RSR_Configure saved the receiver binding and returned int (' . $reply . ').');
+        return $reply;
+    }
+
+    private function logSetup(string $message): void
+    {
+        try {
+            $this->LogMessage($message, KL_MESSAGE);
+            $lock = 'RSR_Debug_' . $this->InstanceID;
+            if (!IPS_SemaphoreEnter($lock, 0)) return;
+            try {
+                $id = @IPS_GetObjectIDByIdent('Debug', $this->InstanceID);
+                if (!$id) return;
+                $value = (string)GetValue($id) . date('c') . ' ' . $message . "\n";
+                if (strlen($value) > 65536) {
+                    $value = substr($value, -65536);
+                    $value = substr($value, strpos($value, "\n") + 1);
+                }
+                SetValue($id, $value);
+            } finally {
+                IPS_SemaphoreLeave($lock);
             }
-            if (!empty($new['actions'])) {
-                $secret = SEC_GetSecret($new['secrets'], $new['key']);
-                $connection = RemoteSyncConnectionV2::credentials($secret);
-                $version = RemoteSyncConnectionV2::call($connection, 'IPS_GetKernelVersion', [], $new['timeout']);
-                if (!is_string($version) || $version === '') throw new RuntimeException('Cannot verify the reverse HTTPS endpoint.');
-            }
-            $this->SetBuffer('LegacyIndex', '');
-            $new['source'] = $Source;
-            $new['gateway'] = $this->configureGateway($new['scriptRoot']);
-            $this->WriteAttributeString('Binding', json_encode($new, JSON_THROW_ON_ERROR));
-            return 2;
-        });
+        } catch (Throwable) {
+            // A diagnostic write must not alter the setup outcome.
+        }
     }
 
     private function configureGateway(int $root): int

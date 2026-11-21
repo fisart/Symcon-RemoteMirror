@@ -12,7 +12,7 @@ class RemoteSync extends IPSModule
 {
     use RemoteSyncDelivery, RemoteSyncProvision, RemoteSyncConfiguration, RemoteSyncAdministration;
 
-    const VERSION = '1.14.0';
+    const VERSION = '1.14.1';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -334,6 +334,7 @@ class RemoteSync extends IPSModule
         $this->initializeDelivery();
         $this->applyAdministration();
         $enabled = $this->ReadPropertyBoolean('SyncEnabled');
+        $this->Log('Sender configuration applied. Synchronization is ' . ($enabled ? 'enabled.' : 'paused.'));
         $work = false;
         foreach (json_decode($this->ReadAttributeString('SyncListCache'), true) ?: [] as $row) {
             $id = (int)($row['ObjectID'] ?? 0);

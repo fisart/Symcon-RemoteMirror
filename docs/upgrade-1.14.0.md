@@ -34,6 +34,8 @@ File and receipt commits use durable file writes and same-directory renames. On 
 
 ## Administration and monitoring
 
+In 1.14.1, if the sender cannot confirm protocol 2, open its **Debug log** and look for the `RSR_Configure` entry. It includes the destination receiver ID and reply type. On the destination, open the **Debug log** variable under that receiver ID and compare the entries at the same time. The receiver records whether it saved the binding or which setup stage failed. A receiver records setup diagnostics automatically. Enable **Debug Mode** on the sender to include successful setup calls as well as failures.
+
 The existing `RS_GetSyncState` entry point provides its legacy buffer, event, start, deadline and retry fields. Requesting this detailed snapshot reads the pending records. Use `RS_GetDeliveryStatus` for lightweight per-lane counts and bytes, and `RS_GetTrafficStatistics` for capture, filtering and transport counters. The existing per-target performance variables retain their idents.
 
 The native form exposes configuration export/import, delivery status and the bounded Debug variable. To use the optional web page, enable web administration and open the path returned by `RS_GetWebURL` on the installation's HTTPS origin. It uses the selected Secrets instance's existing passkey session. The page supports variable selections, pause/resume, sync, validation, export/import and debugging. Drain pending delivery before pausing for a configuration import. Import is for intentional configuration transfer. In-place upgrades reuse their saved settings directly.

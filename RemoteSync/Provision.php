@@ -58,10 +58,22 @@ trait RemoteSyncProvision
                 if ($this->rpcClient->IPS_SetName($id, 'RemoteSync Receiver ' . $folder) === false ||
                     $this->rpcClient->IPS_SetParent($id, $settings['scriptRoot']) === false) throw new RuntimeException('Could not attach destination companion.');
             }
-            if ($this->rpcClient->RSR_Configure($id, $source, json_encode($settings, JSON_THROW_ON_ERROR)) !== 2) {
-                throw new RuntimeException('Destination did not confirm protocol 2.');
+            $context = 'RSR_Configure on receiver #' . $id;
+            $this->Log('Destination ' . $folder . ': calling ' . $context . '.');
+            $reply = $this->rpcClient->RSR_Configure($id, $source, json_encode($settings, JSON_THROW_ON_ERROR));
+            if ($reply !== 2) {
+                $detail = get_debug_type($reply);
+                if (is_int($reply) || is_float($reply) || is_bool($reply)) {
+                    $detail .= ' (' . json_encode($reply, JSON_PRESERVE_ZERO_FRACTION) . ')';
+                } elseif (is_string($reply)) {
+                    $detail .= preg_match('/\A[+-]?[0-9]{1,6}\z/', $reply)
+                        ? ' (' . json_encode($reply) . ')'
+                        : ' (' . strlen($reply) . ' bytes)';
+                }
+                throw new RuntimeException($context . ' returned ' . $detail . '. Expected int (2).');
             }
             $this->SetBuffer($key, json_encode(['signature' => $fingerprint, 'id' => $id], JSON_THROW_ON_ERROR));
+            $this->Log('Destination ' . $folder . ': ' . $context . ' returned int (2).');
             return $id;
         } finally { IPS_SemaphoreLeave($lock); }
     }

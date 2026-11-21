@@ -69,11 +69,51 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.0','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.1','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');
     check(!invoke($m,'importNative',$m->ExportConfig(),'old-revision')['status'],'Stale web save rejected.');
+
+    $m = fresh(true);
+    $m->properties['DebugMode'] = true;
+    $m->ApplyChanges();
+    $senderDebug = IPS_GetObjectIDByIdent('Debug', $m->InstanceID);
+    check(str_contains(GetValue($senderDebug), 'Sender configuration applied.'), 'Enabled sender Debug log records configuration application.');
+    connectPeer();
+    $peer = $GLOBALS['rpcHandler'];
+    $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer) {
+        $reply = $peer($method, $params);
+        return $method === 'RSR_Configure' ? '2' : $reply;
+    };
+    event($m, 89);
+    flushLane($m);
+    $receiverID = IPS_GetInstanceListByModuleID(RECEIVER_GUID)[0];
+    $receiverDebug = IPS_GetObjectIDByIdent('Debug', $receiverID);
+    check(str_contains(GetValue($receiverDebug), 'saved the receiver binding and returned int (2)'), 'Receiver writes its setup outcome to its own Debug log.');
+    check(str_contains(GetValue($senderDebug), 'receiver #' . $receiverID . ' returned string ("2"). Expected int (2).'), 'Sender records the actual reply type and safe protocol value.');
+    check(count(rows($m)) === 1 && !mirrorID(), 'Diagnostic logging preserves the strict protocol check and retains pending history.');
+
+    $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer) {
+        $reply = $peer($method, $params);
+        return $method === 'RSR_Configure' ? null : $reply;
+    };
+    $m->ProvisionTargets();
+    check(str_contains(GetValue($senderDebug), 'returned null. Expected int (2).'), 'Null setup reply is distinguishable from a string.');
+    $testReply = 'private reply data';
+    $GLOBALS['rpcHandler'] = static function ($method, $params) use ($peer, $testReply) {
+        $reply = $peer($method, $params);
+        return $method === 'RSR_Configure' ? $testReply : $reply;
+    };
+    $m->ProvisionTargets();
+    check(str_contains(GetValue($senderDebug), 'returned string (18 bytes)') && !str_contains(GetValue($senderDebug), $testReply), 'Unexpected response text is not copied to diagnostics.');
+    $rx = $GLOBALS['modules'][$receiverID];
+    throws(fn() => $rx->Configure('', '{}'), 'Configure still rejects invalid binding data.');
+    check(str_contains(GetValue($receiverDebug), 'failed while validating the sender and roots'), 'Receiver records the failing setup stage.');
+    connectPeer();
+    forceDue($m);
+    flushLane($m);
+    check(!rows($m) && GetValue(mirrorID()) === 89, 'An integer protocol reply still completes delivery.');
     check(!array_filter($GLOBALS['locks']),'No leaked semaphore.');
     echo 'PASS migration, controls and administration: '.$GLOBALS['testCount']." assertions\n";
 })();
