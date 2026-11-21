@@ -18,6 +18,8 @@
             "Remote Script Root ID": "Remote Script Wurzel-ID",
             "Remote SEC ID": "Remote SEC ID",
             "Remote Setup": "Remote Setup",
+            "Save the target with OK, then Apply Changes.": "Ziel mit OK bestätigen, dann Änderungen übernehmen.",
+            "Reopen the row to verify the saved connection.": "Zeile erneut öffnen, um die gespeicherte Verbindung zu prüfen.",
             "Install Remote": "Remote installieren",
 
             "Step 2: Map Local Roots to Folders": "Schritt 2: Lokale Quellen zu Ordnern zuordnen",
