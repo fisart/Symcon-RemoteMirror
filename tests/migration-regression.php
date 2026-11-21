@@ -42,6 +42,69 @@ require __DIR__ . '/bootstrap.php';
     check(GetValue(48001)==='' && stats($m)['FailedBatches']===1,'Foreign ident collision preserves the other object.');
     $m=fresh();connectPeer();obj(48001,2,10002,'A','a','RS_REF:local:20001');obj(48002,2,10002,'B','b','RS_REF:local:20001');
     event($m,5);flushLane($m);check(GetValue(48001)==='' && GetValue(48002)==='' && !mirrorID(),'Ambiguous legacy identity refuses duplicate creation.');
+
+    $m = fresh(true);
+    obj(21001, 0, 10001, 'Utility Room Door');
+    obj(20001, 2, 21001, 'State');
+    obj(20002, 2, 10001, 'Other sensor');
+    $selection = json_decode($m->attributes['SyncListCache'], true);
+    $selection[] = array_replace($selection[0], ['ObjectID' => 20002]);
+    $m->attributes['SyncListCache'] = json_encode($selection);
+    $m->ApplyChanges();
+    connectPeer();
+    obj(48001, 0, 10002, 'Utility Room');
+    obj(48002, 0, 10002, 'Utility Room Door');
+    obj(48003, 2, 48001, 'State', 'Rem_20001', 'RS_REF:local:20001');
+    obj(48004, 2, 48002, 'State', 'DoorState', 'RS_REF:local:20001');
+    obj(48005, 2, 48002, 'Old State', 'Rem_20001', 'RS_REF:local:20001');
+    obj(48006, 6, 10003, 'Old dashboard link');
+    obj(48007, 6, 10003, 'Current dashboard link');
+    $GLOBALS['objects'][48006]['TargetID'] = 48003;
+    $GLOBALS['objects'][48007]['TargetID'] = 48004;
+    event($m, 61);
+    flushLane($m);
+    check(GetValue(48004) === 61 && GetValue(48003) === '' && GetValue(48005) === '' && !rows($m),
+        'The full relative path, including the leaf name, selects exactly one existing mirror.');
+    check(IPS_GetParent(48004) === 48002 && IPS_GetObject(48004)['ObjectIdent'] === 'DoorState'
+        && $GLOBALS['objects'][48006]['TargetID'] === 48003 && $GLOBALS['objects'][48007]['TargetID'] === 48004
+        && IPS_GetChildrenIDs(48002) === [48004, 48005],
+        'Duplicate routing preserves the existing objects, idents, parents and link targets.');
+
+    IPS_SetName(21001, 'Utility Room');
+    event($m, 62);
+    flushLane($m);
+    check(GetValue(48003) === 62 && GetValue(48004) === 61
+        && IPS_GetParent(48003) === 48001 && !rows($m),
+        'A previously cached mirror ID gives way to a unique exact match when the source path changes.');
+
+    obj(48008, 2, 48001, 'State', 'SecondState', 'RS_REF:local:20001');
+    ob_start();
+    $m->InstallRemoteScripts('Berlin');
+    ob_end_clean();
+    event($m, 63);
+    event($m, 64, true, 20002);
+    flushLane($m);
+    check(GetValue(48003) === 62 && GetValue(48008) === ''
+        && GetValue(IPS_GetObjectIDByIdent('Rem_20002', 10002)) === 64,
+        'Two exact paths reject only the ambiguous variable and a healthy variable in the same batch updates.');
+    $pending = array_values(rows($m));
+    check(count($pending) === 1 && $pending[0]['LocalID'] === 20001 && $pending[0]['Value'] === 63,
+        'An unresolved duplicate keeps only its own event pending in Full History.');
+
+    $m = fresh();
+    connectPeer();
+    obj(48001, 2, 10002, 'Object 20001', 'CurrentState', 'RS_REF:local:20001');
+    obj(48002, 2, 10002, 'Old State', 'Rem_20001', 'RS_REF:local:20001');
+    $selection = json_decode($m->attributes['SyncListCache'], true);
+    $selection[0]['Active'] = false;
+    $selection[0]['Delete'] = true;
+    $m->attributes['SyncListCache'] = json_encode($selection);
+    $m->ApplyChanges();
+    event($m, 65);
+    flushLane($m);
+    check(IPS_ObjectExists(48001) && IPS_ObjectExists(48002) && stats($m)['FailedBatches'] === 1,
+        'An exact match among duplicates never selects a mirror for deletion.');
+
     $m=fresh();connectPeer();obj(48001,3,10003,'RemoteSync Gateway','RS_Gateway');IPS_SetScriptContent(48001,'custom site script');
     $m->ProvisionTargets();event($m,44);flushLane($m);
     check(IPS_GetScriptContent(48001)==='custom site script' && GetValue(mirrorID())===44,'Custom gateway preserved; companion uses its own adapter.');
@@ -69,7 +132,7 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.5','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.6','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');

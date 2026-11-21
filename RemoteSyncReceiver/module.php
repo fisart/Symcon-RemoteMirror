@@ -254,18 +254,38 @@ class RemoteSyncReceiver extends IPSModule
         $remote = $this->withLock('root_' . $root, function () use ($root, $ref, $owner, $auto, $delete, $type, $path, $item) {
             $cacheKey = 'Mirror_' . $owner['mapping'] . '_' . $owner['localID'];
             $remembered = (int)$this->GetBuffer($cacheKey);
-            if ($remembered && IPS_ObjectExists($remembered)) {
+            $hasRemembered = $remembered && IPS_ObjectExists($remembered);
+            if ($hasRemembered) {
                 $object = IPS_GetObject($remembered);
                 $ancestor = $remembered;
                 while ($ancestor && $ancestor !== $root) $ancestor = IPS_GetParent($ancestor);
                 if ($ancestor !== $root || $object['ObjectType'] !== 2 || $object['ObjectInfo'] !== $ref || IPS_GetVariable($remembered)['VariableType'] !== $type) {
                     throw new RuntimeException('Previously matched mirror has changed ownership, type or root.');
                 }
-                return $remembered;
             }
             $parent = $root;
             $cached = $this->legacyCandidates($root, $ref);
-            if (count($cached) > 1) throw new RuntimeException('Multiple existing mirrors have the same source reference. Original objects preserved.');
+            if ($hasRemembered && !in_array($remembered, $cached, true)) $cached[] = $remembered;
+            $preferred = 0;
+            if (count($cached) > 1) {
+                if ($delete) throw new RuntimeException('Cannot delete a mirror while its source reference is duplicated.');
+                $exact = [];
+                $components = array_reverse($path);
+                foreach ($cached as $candidate) {
+                    $current = $candidate;
+                    foreach ($components as $component) {
+                        if (!$current || $current === $root || IPS_GetName($current) !== $component) continue 2;
+                        $current = IPS_GetParent($current);
+                    }
+                    if ($current === $root) $exact[] = $candidate;
+                }
+                if (count($exact) !== 1) {
+                    throw new RuntimeException('Multiple mirrors share the source reference and no single mirror matches its exact relative path.');
+                }
+                $preferred = $exact[0];
+                $cached = $exact;
+            }
+            if ($hasRemembered && ($cached[0] ?? 0) === $remembered) return $remembered;
             if ($cached) {
                 $parent = IPS_GetParent($cached[0]);
                 $path = [IPS_GetName($cached[0])];
@@ -289,8 +309,9 @@ class RemoteSyncReceiver extends IPSModule
             foreach (IPS_GetChildrenIDs($parent) as $child) {
                 if (IPS_GetObject($child)['ObjectInfo'] === $ref) $matches[] = $child;
             }
-            if (count($matches) > 1 || ($byIdent && !in_array($byIdent, $matches, true))) throw new RuntimeException('Ambiguous mirror or ownership conflict.');
-            $remote = $matches[0] ?? 0;
+            if (($preferred && !in_array($preferred, $matches, true)) || (!$preferred && count($matches) > 1)
+                || ($byIdent && !in_array($byIdent, $matches, true))) throw new RuntimeException('Ambiguous mirror or ownership conflict.');
+            $remote = $preferred ?: ($matches[0] ?? 0);
             if (!$remote) {
                 if ($delete) return 0;
                 if (!$auto) {
