@@ -12,7 +12,7 @@ class RemoteSync extends IPSModule
 {
     use RemoteSyncDelivery, RemoteSyncProvision, RemoteSyncConfiguration, RemoteSyncAdministration;
 
-    const VERSION = '1.14.6';
+    const VERSION = '1.14.7';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
@@ -248,6 +248,10 @@ class RemoteSync extends IPSModule
                 foreach ($element['columns'] as &$col) {
                     if ($col['name'] === 'RemoteKey') $col['edit']['options'] = $serverOptions;
                 }
+                foreach ($element['form'] as &$field) {
+                    if (($field['name'] ?? '') === 'RemoteKey') $field['options'] = $serverOptions;
+                }
+                unset($field);
             }
             if ($element['name'] === 'Roots') {
                 foreach ($element['columns'] as &$col) {

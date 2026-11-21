@@ -267,7 +267,8 @@ class RemoteSyncReceiver extends IPSModule
             $cached = $this->legacyCandidates($root, $ref);
             if ($hasRemembered && !in_array($remembered, $cached, true)) $cached[] = $remembered;
             $preferred = 0;
-            if (count($cached) > 1) {
+            $duplicates = count($cached) > 1;
+            if ($duplicates) {
                 if ($delete) throw new RuntimeException('Cannot delete a mirror while its source reference is duplicated.');
                 $exact = [];
                 $components = array_reverse($path);
@@ -285,7 +286,10 @@ class RemoteSyncReceiver extends IPSModule
                 $preferred = $exact[0];
                 $cached = $exact;
             }
-            if ($hasRemembered && ($cached[0] ?? 0) === $remembered) return $remembered;
+            if ($hasRemembered && ($cached[0] ?? 0) === $remembered) {
+                if (!$delete && !$duplicates) $this->followMirrorLayout($remembered, $root, $owner, $item, $auto);
+                return $remembered;
+            }
             if ($cached) {
                 $parent = IPS_GetParent($cached[0]);
                 $path = [IPS_GetName($cached[0])];
@@ -335,6 +339,7 @@ class RemoteSyncReceiver extends IPSModule
             if (!is_file($claim)) RemoteSyncJournalV2::durableWrite($claim, json_encode($identity, JSON_THROW_ON_ERROR));
             if (!is_file($file)) RemoteSyncJournalV2::durableWrite($file, json_encode($owner, JSON_THROW_ON_ERROR));
             $this->SetBuffer($cacheKey, (string)$remote);
+            if (!$delete && !$duplicates) $this->followMirrorLayout($remote, $root, $owner, $item, $auto);
             return $remote;
         });
         if (!$remote) return 0;
@@ -346,6 +351,9 @@ class RemoteSyncReceiver extends IPSModule
             if (is_file($file)) unlink($file);
             $claim = IPS_GetKernelDir() . 'remotesync-received/owners/' . $remote . '.json';
             if (is_file($claim)) unlink($claim);
+            $layout = $this->storage() . '/layout/' . $remote . '.json';
+            if (is_file($layout)) unlink($layout);
+            $this->SetBuffer('LayoutSeen_' . $remote, '');
             return $remote;
         }
         $stage = 'applying the mirror profile and action';
@@ -357,6 +365,166 @@ class RemoteSyncReceiver extends IPSModule
         if ($resuming && GetValue($remote) === $value) return $remote;
         if (SetValue($remote, $value) === false) throw new RuntimeException('Value update failed.');
         return $remote;
+    }
+
+    private function mirrorPath(int $id, int $root): ?array
+    {
+        $path = [];
+        while ($id !== $root) {
+            if (!$id || count($path) >= 128 || !IPS_ObjectExists($id)) return null;
+            $path[] = IPS_GetName($id);
+            $id = IPS_GetParent($id);
+        }
+        return array_reverse($path);
+    }
+
+    private function mirrorSlotIsFree(int $id, int $parent, string $name): bool
+    {
+        $ident = IPS_GetObject($id)['ObjectIdent'];
+        foreach (IPS_GetChildrenIDs($parent) as $child) {
+            if ($child === $id) continue;
+            $object = IPS_GetObject($child);
+            if ($object['ObjectName'] === $name || ($ident !== '' && $object['ObjectIdent'] === $ident)) return false;
+        }
+        return true;
+    }
+
+    private function finishMirrorLayout(int $id, int $root, string $file, array $layout): array
+    {
+        $pending = $layout['pending'];
+        $steps = $pending['steps'];
+        $last = count($steps) - 1;
+        $position = fn(): array => [IPS_GetParent($id), IPS_GetName($id)];
+        $start = array_search($position(), $steps, true);
+        if ($start === false) throw new RuntimeException('Mirror was edited during a layout change.');
+
+        $oldParentPath = array_slice($layout['path'], 0, -1);
+        $newParentPath = array_slice($pending['path'], 0, -1);
+        if ($this->mirrorPath($steps[$last][0], $root) !== $newParentPath
+            || ($steps[$start][0] === $steps[0][0] && $this->mirrorPath($steps[0][0], $root) !== $oldParentPath)) {
+            throw new RuntimeException('A parent folder changed during the layout change.');
+        }
+
+        $place = function (array $from, array $to) use ($id, $position): void {
+            if ($position() !== $from || !$this->mirrorSlotIsFree($id, $to[0], $to[1])) {
+                throw new RuntimeException('The mirror location changed or the destination is occupied.');
+            }
+            $result = $from[0] === $to[0] ? IPS_SetName($id, $to[1]) : IPS_SetParent($id, $to[0]);
+            if ($result === false || $position() !== $to) throw new RuntimeException('Symcon could not change the mirror location.');
+        };
+
+        try {
+            for ($i = $start; $i < $last; $i++) $place($steps[$i], $steps[$i + 1]);
+        } catch (Throwable $failure) {
+            // The saved positions also let a later update recover an interrupted rollback.
+            $current = array_search($position(), $steps, true);
+            if ($current !== false && $current > 0 && $current < $last
+                && $this->mirrorPath($steps[0][0], $root) === $oldParentPath) {
+                try {
+                    for ($i = $current; $i > 0; $i--) $place($steps[$i], $steps[$i - 1]);
+                } catch (Throwable) {
+                    throw new RuntimeException('The mirror move and its rollback are pending.', 0, $failure);
+                }
+            }
+            throw $failure;
+        }
+
+        $layout['path'] = $pending['path'];
+        $layout['parent'] = $steps[$last][0];
+        $layout['at'] = $pending['at'];
+        unset($layout['pending']);
+        RemoteSyncJournalV2::durableWrite($file, json_encode($layout, JSON_THROW_ON_ERROR));
+        return $layout;
+    }
+
+    private function followMirrorLayout(int $id, int $root, array $owner, array $item, bool $auto): void
+    {
+        $path = $item['Path'];
+        $at = $item['Timestamp'] ?? null;
+        if ((!is_int($at) && !is_float($at)) || !is_finite((float)$at) || !array_is_list($path)
+            || array_filter($path, static fn($part): bool => !is_string($part) || $part === '')) return;
+
+        $seenKey = 'LayoutSeen_' . $id;
+        $warningKey = 'LayoutWarning_' . $id;
+        $seen = json_decode($this->GetBuffer($seenKey), true);
+        if (($seen['owner'] ?? null) === $owner && $at < $seen['at']) return;
+        $ready = ($seen['owner'] ?? null) === $owner && $seen['path'] === $path && $seen['ready'];
+        $snapshot = ['owner' => $owner, 'at' => $at, 'path' => $path, 'ready' => $ready];
+        $this->SetBuffer($seenKey, json_encode($snapshot, JSON_THROW_ON_ERROR));
+        if ($ready) return;
+
+        $file = $this->storage() . '/layout/' . $id . '.json';
+        try {
+            $layout = is_file($file) ? json_decode(file_get_contents($file), true, 32, JSON_THROW_ON_ERROR) : null;
+            if ($layout !== null && ($layout['owner'] ?? null) !== $owner) {
+                throw new RuntimeException('The saved layout belongs to another mapping.');
+            }
+            if (isset($layout['pending'])) {
+                $pending = $layout['pending'];
+                if ($at >= $pending['at'] && $path !== $pending['path']
+                    && [IPS_GetParent($id), IPS_GetName($id)] === $pending['steps'][0]) {
+                    unset($layout['pending']);
+                    RemoteSyncJournalV2::durableWrite($file, json_encode($layout, JSON_THROW_ON_ERROR));
+                } else {
+                    $layout = $this->finishMirrorLayout($id, $root, $file, $layout);
+                }
+            }
+            if ($layout !== null && $at < $layout['at']) return;
+
+            $currentPath = $this->mirrorPath($id, $root);
+            $currentParent = IPS_GetParent($id);
+            if ($currentPath === $path) {
+                // An aligned existing mirror can establish a baseline without any object changes.
+                if ($layout === null || $layout['path'] !== $path || $layout['parent'] !== $currentParent) {
+                    $layout = ['owner' => $owner, 'path' => $path, 'parent' => $currentParent, 'at' => $at];
+                    RemoteSyncJournalV2::durableWrite($file, json_encode($layout, JSON_THROW_ON_ERROR));
+                }
+            } else {
+                if ($layout === null || $currentPath !== $layout['path'] || $currentParent !== $layout['parent']) return;
+
+                $parent = $root;
+                foreach (array_slice($path, 0, -1) as $folder) {
+                    $matches = array_values(array_filter(IPS_GetChildrenIDs($parent), static fn(int $child): bool => IPS_GetName($child) === $folder));
+                    if (count($matches) > 1) throw new RuntimeException('The destination folder path is ambiguous.');
+                    $next = $matches[0] ?? 0;
+                    if (!$next) {
+                        if (!$auto) throw new RuntimeException('The destination folder is missing and Auto-Create is disabled.');
+                        $next = IPS_CreateCategory();
+                        if (!$next || IPS_SetName($next, $folder) === false || IPS_SetParent($next, $parent) === false) {
+                            throw new RuntimeException('Symcon could not create the destination folder.');
+                        }
+                    }
+                    if (!in_array(IPS_GetObject($next)['ObjectType'], [0, 1], true)) {
+                        throw new RuntimeException('The destination path contains an object that cannot hold this mirror.');
+                    }
+                    $parent = $next;
+                }
+
+                $oldName = IPS_GetName($id);
+                $name = $path[count($path) - 1];
+                if (!$this->mirrorSlotIsFree($id, $parent, $name)) throw new RuntimeException('The destination is occupied.');
+                $steps = [[$currentParent, $oldName]];
+                if ($parent !== $currentParent && $name !== $oldName) {
+                    if ($this->mirrorSlotIsFree($id, $currentParent, $name)) $steps[] = [$currentParent, $name];
+                    elseif ($this->mirrorSlotIsFree($id, $parent, $oldName)) $steps[] = [$parent, $oldName];
+                    else throw new RuntimeException('Both intermediate locations are occupied.');
+                }
+                $steps[] = [$parent, $name];
+                $layout['pending'] = ['path' => $path, 'at' => $at, 'steps' => $steps];
+                RemoteSyncJournalV2::durableWrite($file, json_encode($layout, JSON_THROW_ON_ERROR));
+                $this->finishMirrorLayout($id, $root, $file, $layout);
+                $this->logReceiver('Followed source layout for mirror #' . $id . '.');
+            }
+            $snapshot['ready'] = true;
+            $this->SetBuffer($seenKey, json_encode($snapshot, JSON_THROW_ON_ERROR));
+            $this->SetBuffer($warningKey, '');
+        } catch (Throwable $failure) {
+            $warning = 'Layout change deferred for mirror #' . $id . '. ' . $failure->getMessage();
+            if ($this->GetBuffer($warningKey) !== $warning) {
+                $this->logReceiver($warning);
+                $this->SetBuffer($warningKey, $warning);
+            }
+        }
     }
 
     private function legacyCandidates(int $root, string $reference): array

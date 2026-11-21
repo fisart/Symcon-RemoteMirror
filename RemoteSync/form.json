@@ -55,6 +55,15 @@
                     "name": "InstallRemote", "caption": "Remote Setup", "width": "150px", "add": "", 
                     "edit": { "type": "Button", "caption": "Verify companion", "onClick": "RS_InstallRemoteScripts($id, $Name);" }
                 }
+            ],
+            "form": [
+                { "type": "ValidationTextBox", "name": "Name", "caption": "Folder Name", "width": "100%" },
+                { "type": "Select", "name": "RemoteKey", "caption": "Remote Server Key", "options": [], "width": "100%" },
+                { "type": "NumberSpinner", "name": "RemoteScriptRootID", "caption": "Remote Script Root ID", "minimum": 10000, "maximum": 99999, "width": "100%" },
+                { "type": "NumberSpinner", "name": "RemoteSecretsID", "caption": "Remote SEC ID", "minimum": 10000, "maximum": 99999, "width": "100%" },
+                { "type": "Label", "caption": "Save the target with OK, then Apply Changes." },
+                { "type": "Label", "caption": "Reopen the row to verify the saved connection." },
+                { "type": "Button", "caption": "Verify companion", "onClick": "RS_InstallRemoteScripts($id, $Name);" }
             ]
         },
         { "type": "Label", "caption": "Step 2: Map Local Roots to Folders" },

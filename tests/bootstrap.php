@@ -33,7 +33,16 @@ function IPS_GetObjectIDByIdent($ident,$parent){foreach($GLOBALS['objects'] as $
 function IPS_GetChildrenIDs($parent){return array_keys(array_filter($GLOBALS['objects'],fn($o)=>$o['ParentID']===$parent));}
 function GetValue($id){return $GLOBALS['values'][$id]??'';}function SetValue($id,$v){if(($GLOBALS['rejectValue']??null)===$v)throw new RuntimeException('Injected SetValue failure.');$GLOBALS['values'][$id]=$v;$GLOBALS['valueWrites'][$id]=($GLOBALS['valueWrites'][$id]??0)+1;if(($GLOBALS['throwAfterSet']??0)===$id){unset($GLOBALS['throwAfterSet']);throw new RuntimeException('Interrupted before receipt');}return true;}
 function IPS_CreateCategory(){$id=$GLOBALS['nextID']++;obj($id,0);return $id;}function IPS_CreateVariable($type){$id=$GLOBALS['nextID']++;obj($id,2);$GLOBALS['objects'][$id]['VariableType']=$type;return $id;}
-function IPS_CreateScript($type){$id=$GLOBALS['nextID']++;obj($id,3);return $id;}function IPS_SetParent($id,$v){$GLOBALS['objects'][$id]['ParentID']=$v;}function IPS_SetInfo($id,$v){$GLOBALS['objects'][$id]['ObjectInfo']=$v;}
+function IPS_CreateScript($type){$id=$GLOBALS['nextID']++;obj($id,3);return $id;}
+function IPS_SetParent($id,$parent){
+    if (($GLOBALS['failParentChange']??null) === [$id,$parent]) {
+        unset($GLOBALS['failParentChange']);
+        return false;
+    }
+    $GLOBALS['objects'][$id]['ParentID']=$parent;
+    return true;
+}
+function IPS_SetInfo($id,$v){$GLOBALS['objects'][$id]['ObjectInfo']=$v;}
 function IPS_SetName($id,$v){$GLOBALS['objects'][$id]['ObjectName']=$v;}function IPS_SetIdent($id,$v){$other=IPS_GetObjectIDByIdent($v,IPS_GetParent($id));if($other&&$other!==$id)throw new RuntimeException('Ident occupied.');$GLOBALS['objects'][$id]['ObjectIdent']=$v;}
 function IPS_DeleteVariable($id){unset($GLOBALS['objects'][$id],$GLOBALS['values'][$id]);return true;}function IPS_SetVariableCustomProfile($id,$p){$GLOBALS['objects'][$id]['VariableCustomProfile']=$p;}function IPS_SetVariableCustomAction($id,$a){$GLOBALS['objects'][$id]['VariableCustomAction']=$a;return true;}
 function IPS_VariableProfileExists($name){return isset($GLOBALS['profiles'][$name]);}function IPS_GetVariableProfile($name){return $GLOBALS['profiles'][$name];}

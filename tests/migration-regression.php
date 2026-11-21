@@ -105,6 +105,80 @@ require __DIR__ . '/bootstrap.php';
     check(IPS_ObjectExists(48001) && IPS_ObjectExists(48002) && stats($m)['FailedBatches'] === 1,
         'An exact match among duplicates never selects a mirror for deletion.');
 
+    $m = fresh(true);
+    $m->properties['AutoCreate'] = true;
+    obj(21001, 0, 10001, 'Utility Room');
+    obj(21002, 0, 10001, 'Landing');
+    obj(20001, 2, 21001, 'State');
+    $m->ApplyChanges();
+    connectPeer();
+    event($m, 71);
+    $earlyPacket = array_values(rows($m))[0];
+    flushLane($m);
+    $oldRoom = IPS_GetChildrenIDs(10002)[0];
+    $mirror = IPS_GetObjectIDByIdent('Rem_20001', $oldRoom);
+    obj(48001, 6, 10003, 'Dashboard link');
+    $GLOBALS['objects'][48001]['TargetID'] = $mirror;
+    IPS_SetName(20001, 'Door State');
+    event($m, 72);
+    flushLane($m);
+    check(IPS_GetName($mirror) === 'Door State' && IPS_GetParent($mirror) === $oldRoom && GetValue($mirror) === 72,
+        'An aligned mirror follows a source rename in place.');
+
+    obj(48002, 0, 10002, 'Landing');
+    $GLOBALS['failParentChange'] = [$mirror, 48002];
+    IPS_SetName(20001, 'Contact State');
+    IPS_SetParent(20001, 21002);
+    event($m, 73);
+    flushLane($m);
+    check(IPS_GetName($mirror) === 'Door State' && IPS_GetParent($mirror) === $oldRoom && GetValue($mirror) === 73 && !rows($m),
+        'A failed second layout operation rolls back the first and still delivers the value.');
+
+    // Simulate a receiver process stopping after the first step of the saved move.
+    IPS_SetName($mirror, 'Contact State');
+    $receiverID = IPS_GetInstanceListByModuleID(RECEIVER_GUID)[0];
+    $beforeReload = $GLOBALS['modules'][$receiverID];
+    $receiver = new RemoteSyncReceiver();
+    $receiver->InstanceID = $receiverID;
+    $receiver->attributes = $beforeReload->attributes;
+    $receiver->properties = $beforeReload->properties;
+    $receiver->Create();
+    event($m, 74);
+    flushLane($m);
+    check(IPS_GetParent($mirror) === 48002 && IPS_GetName($mirror) === 'Contact State'
+        && GetValue($mirror) === 74 && $GLOBALS['objects'][48001]['TargetID'] === $mirror
+        && !IPS_GetChildrenIDs($oldRoom), 'After a receiver restart, a pending layout move completes on the same linked object.');
+
+    $earlyPacket['EventID'] = bin2hex(random_bytes(16));
+    $earlyPacket['Reliable'] = false;
+    $earlyPacket['Timestamp'] -= 1;
+    $receiver->Receive(json_encode(['Protocol' => 2, 'Source' => $earlyPacket['Source'], 'Batch' => [$earlyPacket], 'AutoCreate' => true]));
+    check(IPS_GetParent($mirror) === 48002 && IPS_GetName($mirror) === 'Contact State',
+        'An older packet cannot undo a newer recorded layout.');
+
+    obj(48003, 2, 48002, 'Occupied');
+    IPS_SetName(20001, 'Occupied');
+    event($m, 75);
+    flushLane($m);
+    check(GetValue($mirror) === 75 && IPS_GetName($mirror) === 'Contact State' && GetValue(48003) === '',
+        'A destination collision preserves the existing layout and delivers the value to its owner.');
+
+    obj(21003, 0, 10001, 'Entry');
+    IPS_SetParent(20001, 21003);
+    IPS_SetName(20001, 'Entry contact');
+    event($m, 76);
+    flushLane($m);
+    check(IPS_GetName(IPS_GetParent($mirror)) === 'Entry' && IPS_GetName($mirror) === 'Entry contact'
+        && GetValue($mirror) === 76 && $GLOBALS['objects'][48001]['TargetID'] === $mirror,
+        'Auto-Create supplies the new destination folder and moves the linked mirror without allocating a new variable.');
+
+    IPS_SetName($mirror, 'Berlin custom name');
+    IPS_SetName(20001, 'Source renamed again');
+    event($m, 77);
+    flushLane($m);
+    check(IPS_GetName($mirror) === 'Berlin custom name' && GetValue($mirror) === 77,
+        'An operator-customized receiver layout stays in place and keeps syncing values.');
+
     $m=fresh();connectPeer();obj(48001,3,10003,'RemoteSync Gateway','RS_Gateway');IPS_SetScriptContent(48001,'custom site script');
     $m->ProvisionTargets();event($m,44);flushLane($m);
     check(IPS_GetScriptContent(48001)==='custom site script' && GetValue(mirrorID())===44,'Custom gateway preserved; companion uses its own adapter.');
@@ -132,7 +206,7 @@ require __DIR__ . '/bootstrap.php';
     $GLOBALS['signedIn']=true;$_COOKIE['SEC_PORTAL_V2_42']='fixture-session';$_GET['action']='status';
     ob_start();$m->ProcessHookData();$response=ob_get_clean();$status=json_decode($response,true);
     if (!is_array($status)) throw new RuntimeException('Invalid administration status response.');
-    check(!empty($status['csrf']) && $status['version']==='1.14.6','Authenticated status supplies version and session token.');
+    check(!empty($status['csrf']) && $status['version']==='1.14.7','Authenticated status supplies version and session token.');
     $_SERVER['HTTP_ORIGIN']='https://fixture.invalid';
     invoke($m,'verifyWebMutation',42,['csrf'=>$status['csrf']]);check(true,'Session-bound mutation token accepted.');
     throws(fn()=>invoke($m,'verifyWebMutation',42,['csrf'=>'invalid']),'Invalid token rejected.');
