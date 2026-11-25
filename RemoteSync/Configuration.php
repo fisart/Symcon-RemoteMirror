@@ -57,7 +57,7 @@ trait RemoteSyncConfiguration
     public function ValidateConfigurationBackup(string $JSON): string
     {
         $issues=[];$hash='';try{$native=json_decode($JSON,false,64,JSON_THROW_ON_ERROR);$hash=hash('sha256',self::canonical($native));$this->validatedConfig($JSON);}catch(Throwable $e){$issues[]='Invalid or unsupported configuration. Check the schema, field types, ranges and mapping references.';}
-        return json_encode(['schema'=>'Symcon.ConfigurationBackupValidation.v1','valid'=>!$issues,'scope'=>self::CONFIG_FORMAT,'payloadHash'=>$hash,'issues'=>$issues,
+        return json_encode(['schema'=>'Symcon.ConfigurationBackupValidation.v1','valid'=>!$issues,'scope'=>'format','payloadHash'=>$hash,'issues'=>$issues,
             'checks'=>['Native schema and property allowlist','Mapping and selection consistency'],'notes'=>['Read-only format validation. Local dependency availability is checked during import.']],JSON_THROW_ON_ERROR);
     }
     public function ImportConfig(string $JSONString): array
