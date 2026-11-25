@@ -12,7 +12,7 @@ class RemoteSync extends IPSModule
 {
     use RemoteSyncDelivery, RemoteSyncProvision, RemoteSyncConfiguration, RemoteSyncAdministration;
 
-    const VERSION = '1.14.7';
+    const VERSION = '1.14.8';
     private $rpcClient = null;
     private $config = [];
     private $buffer = [];
